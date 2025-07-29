@@ -1,19 +1,23 @@
-# requirements.txt (نسخه بهینه‌سازی شده)
+# requirements.txt (نسخه نهایی با aiogram)
 
-# Core
-python-telegram-bot==13.15
+# Telegram Bot Library
+aiogram==2.25.1
+
+# Database and Data Analysis
 psycopg2-binary
 pandas
 SQLAlchemy
-requests
-
-# Binance & Technical Analysis
-python-binance
 ta
+
+# Binance API
+python-binance
 
 # Charting
 matplotlib
 
-# Web server for deployment
+# Web Server
 fastapi
 uvicorn
+
+# Other
+requests
