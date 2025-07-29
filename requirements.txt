@@ -1,0 +1,22 @@
+# Core
+python-telegram-bot==13.15
+psycopg2-binary
+pandas
+SQLAlchemy
+requests # For APIs
+
+# Binance & Technical Analysis
+python-binance
+ta
+
+# Charting
+matplotlib
+
+# AI/NLP (Sentiment Analysis)
+transformers[torch]
+torch
+
+# Web server for deployment
+gunicorn
+fastapi
+uvicorn
