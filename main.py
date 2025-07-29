@@ -1,4 +1,4 @@
-# main.py (نسخه نهایی، کامل و آماده استقرار)
+# main.py (نسخه نهایی و کامل با لاگ‌گیری دقیق)
 
 import os
 import logging
@@ -24,12 +24,14 @@ import matplotlib.pyplot as plt
 from fastapi import FastAPI
 
 # --- تنظیمات اولیه ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(threadName)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s')
 
 # --- متغیرهای محیطی ---
 DATABASE_URL = os.getenv('DATABASE_URL')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 NEWS_API_KEY = os.getenv('NEWS_API_KEY')
+# آیدی چت برای تست و نوتیفیکیشن
+TARGET_CHAT_ID = os.getenv('TARGET_CHAT_ID') 
 
 # --- برنامه FastAPI (برای وب سرور) ---
 app = FastAPI()
@@ -41,43 +43,57 @@ def read_root():
 
 def setup_and_run_bot_logic():
     """این تابع تمام منطق سنگین ربات را بعد از راه‌اندازی وب‌سرور اجرا می‌کند."""
-    logging.info("Waiting for a moment before starting background services...")
-    time.sleep(10)
+    logging.info("BACKGROUND_SERVICES: Starting setup...")
+    time.sleep(5)
 
     engine = None
     if DATABASE_URL:
         try:
+            logging.info("DATABASE: Attempting to create engine...")
             engine = create_engine(DATABASE_URL)
-            logging.info("Database engine created successfully.")
+            logging.info("DATABASE: Engine created. Attempting to connect...")
             with engine.connect() as conn:
+                logging.info("DATABASE: Connection successful. Setting up tables...")
                 conn.execute(text("CREATE TABLE IF NOT EXISTS klines (time TIMESTAMPTZ, symbol TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL);"))
                 conn.execute(text("SELECT create_hypertable('klines', 'time', if_not_exists => TRUE);"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS technical_analysis (time TIMESTAMPTZ, symbol TEXT, rsi_14 REAL, macd REAL, ema_200 REAL, PRIMARY KEY (time, symbol));"))
                 conn.commit()
-            logging.info("Database tables checked/created.")
+            logging.info("DATABASE: Setup complete.")
         except Exception as e:
-            logging.error(f"FATAL: Could not connect to or set up database: {e}")
+            logging.error(f"FATAL_DATABASE_ERROR: {e}")
             engine = None
     else:
         logging.warning("DATABASE_URL not set. Database features will be disabled.")
 
     if TELEGRAM_TOKEN:
+        logging.info("TELEGRAM: Starting Telegram bot thread...")
         threading.Thread(target=run_telegram_bot, args=(engine,), name="TelegramThread", daemon=True).start()
     else:
         logging.warning("TELEGRAM_TOKEN not set. Telegram bot will not start.")
 
     if engine:
+        logging.info("ANALYZER: Starting data analyzer thread...")
         threading.Thread(target=run_data_analyzer, args=(engine,), name="AnalyzerThread", daemon=True).start()
-
+    else:
+        logging.warning("ANALYZER: Not started because database is not available.")
+    
+    logging.info("BACKGROUND_SERVICES: All background services have been initiated.")
 
 def run_telegram_bot(db_engine):
     """منطق کامل ربات تلگرام"""
     if not TELEGRAM_TOKEN: return
-    logging.info("Starting Telegram bot polling...")
-    updater = Updater(TELEGRAM_TOKEN)
-    dp = updater.dispatcher
+    
+    try:
+        logging.info("TELEGRAM_BOT: Initializing Updater...")
+        updater = Updater(TELEGRAM_TOKEN)
+        dp = updater.dispatcher
+        logging.info("TELEGRAM_BOT: Updater initialized successfully.")
+    except Exception as e:
+        logging.error(f"FATAL_TELEGRAM_ERROR: Could not initialize Updater: {e}")
+        return
 
     def start(update: Update, context: CallbackContext) -> None:
+        logging.info(f"Received /start command from user {update.effective_user.id}")
         keyboard = [
             [InlineKeyboardButton("📊 BTC", callback_data='analyze_BTCUSDT'),
              InlineKeyboardButton("📈 ETH", callback_data='analyze_ETHUSDT')],
@@ -162,13 +178,15 @@ def run_telegram_bot(db_engine):
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CallbackQueryHandler(button_handler))
+    
+    logging.info("TELEGRAM_BOT: Starting polling...")
     updater.start_polling()
     updater.idle()
 
 
 def run_data_analyzer(db_engine):
     """منطق کامل دریافت داده و تحلیل"""
-    logging.info("Starting data analyzer...")
+    logging.info("ANALYZER: Starting...")
     metadata_analyzer = MetaData()
     technical_analysis_table = Table('technical_analysis', metadata_analyzer, autoload_with=db_engine)
     
@@ -202,14 +220,15 @@ def run_data_analyzer(db_engine):
             with db_engine.connect() as conn:
                 conn.execute(on_conflict_stmt)
                 conn.commit()
-            logging.info(f"Analyzed and saved for {symbol}: RSI={rsi:.2f}")
+            logging.info(f"ANALYZER: Analyzed and saved for {symbol}: RSI={rsi:.2f}")
         except Exception as e:
-            logging.error(f"Error in process_kline for {kline_data.get('s')}: {e}")
+            logging.error(f"ANALYZER_ERROR: Error in process_kline for {kline_data.get('s')}: {e}")
 
     def handle_kline_message(msg):
         if msg.get('e') == 'kline' and msg.get('k', {}).get('x'):
             process_kline(msg['k'])
             
+    logging.info("ANALYZER: Starting websocket manager...")
     twm = ThreadedWebsocketManager()
     twm.start()
     streams = ['btcusdt@kline_1m', 'ethusdt@kline_1m', 'xrpusdt@kline_1m', 'dogeusdt@kline_1m']
@@ -219,3 +238,6 @@ def run_data_analyzer(db_engine):
 # --- نقطه شروع برنامه ---
 # یک نخ جدا برای منطق اصلی ربات ایجاد می‌کنیم تا وب‌سرور را مسدود نکند
 threading.Thread(target=setup_and_run_bot_logic, daemon=True).start()
+
+# نخ اصلی برنامه، وب سرور را برای بیدار ماندن اجرا می‌کند
+logging.info("MAIN_THREAD: Starting web server to keep the service alive...")
