@@ -1,3 +1,5 @@
+# requirements.txt (نسخه نهایی با KuCoin و ccxt)
+
 # Telegram Bot Library
 telepot
 
@@ -5,11 +7,13 @@ telepot
 fastapi
 uvicorn
 
-# Libraries for Analysis (to be used later)
+# Libraries for Analysis
 pandas
 sqlalchemy
 psycopg2-binary
-python-binance
 ta
 matplotlib
 requests
+
+# Crypto Exchange Library (NEW)
+ccxt
