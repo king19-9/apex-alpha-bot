@@ -1,5 +1,4 @@
-
-# main.py (نسخه نهایی: Apex Co-Pilot v3.0)
+# main.py (نسخه نهایی و کامل: Apex Co-Pilot v3.1)
 
 import os
 import logging
@@ -69,7 +68,7 @@ def check_long_signal_conditions(trend_d, trend_4h, last_candle, support, lower_
     if trend_d == "صعودی" and trend_4h == "صعودی" and (last_candle['c'] > support) and (last_candle['c'] < support * 1.03) and (lower_wick > body_size * 1.5):
         is_long_signal = True
         confidence = 70
-        if abs(last_candle['c'] - support) < abs(last_candle['c'] - last_candle['o']):
+        if body_size > 0 and abs(last_candle['c'] - support) < abs(last_candle['c'] - last_candle['o']):
             confidence += 10
     return is_long_signal, confidence
 
@@ -83,8 +82,11 @@ def generate_full_report(symbol):
             df_1h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='1h', limit=50), columns=['ts','o','h','l','c','v'])
             if df_1h.empty or df_4h.empty or df_d.empty:
                 return f"خطا: داده‌های کافی برای نماد {symbol} از صرافی دریافت نشد."
+        except ccxt.BadSymbol:
+            return "خطا: نماد وارد شده در صرافی یافت نشد."
         except Exception as e:
-            return f"خطا در ارتباط با صرافی: {e}"
+            logging.error(f"Data fetch error for {symbol}: {e}")
+            return "خطا در ارتباط با صرافی. لطفاً لحظاتی بعد دوباره تلاش کنید."
 
         report = f"🔬 **گزارش جامع تحلیلی برای #{symbol}**\n\n"
         last_price = df_1h.iloc[-1]['c']
@@ -171,7 +173,7 @@ def hunt_signals():
                 
                 is_long, confidence = check_long_signal_conditions(trend_d, trend_4h, last_1h_candle, support, lower_wick, body_size)
                 
-                if is_long and confidence > 85: # آستانه اطمینان بالا برای ارسال نوتیفیکیشن
+                if is_long and confidence > 85:
                     report = generate_full_report(symbol)
                     message = f"🎯 **شکار سیگنال با اطمینان بالا یافت شد!** 🎯\n\n{report}"
                     for chat_id in list(signal_hunt_subscribers):
@@ -191,18 +193,37 @@ def hunt_signals():
         time.sleep(15 * 60)
 
 def trade_monitor_loop():
-    """پایش مداوم معاملات باز کاربران."""
+    """پایش مداوم و هوشمند معاملات باز کاربران."""
     while True:
-        time.sleep(5 * 60) # هر ۵ دقیقه یک بار
+        time.sleep(2 * 60)
+        
+        if not active_trades:
+            continue
+
+        logging.info(f"TRADE_MONITOR: Starting a new monitoring cycle for {len(active_trades)} active trade(s).")
+        
         for chat_id, symbol in list(active_trades.items()):
             try:
-                # به جای یک کندل، تحلیل کامل را اجرا می‌کنیم
-                report = generate_full_report(symbol)
-                # منطق هشدار (شبیه‌سازی شده): اگر پیشنهاد جدیدی مخالف معامله باز ما بود، هشدار بده
-                if "سیگنال فروش" in report and "Long" in "معامله شما": # این منطق باید دقیق‌تر شود
-                     bot.sendMessage(chat_id, f"🚨 **هشدار پایش معامله برای #{symbol}** 🚨\nتحلیل جدید نشانه‌هایی از تغییر روند را نشان می‌دهد. لطفاً پوزیشن خود را بازبینی کنید.")
+                df = pd.DataFrame(exchange.fetch_ohlcv(f"{symbol.upper()}/USDT", timeframe='5m', limit=20), 
+                                  columns=['ts','o','h','l','c','v'])
+                
+                if df.empty or len(df) < 20: continue
+
+                last_candle = df.iloc[-1]
+                prev_candle = df.iloc[-2]
+                
+                is_strong_reversal = abs(last_candle['c'] - last_candle['o']) > abs(prev_candle['c'] - prev_candle['o']) * 1.5 \
+                                     and (last_candle['c'] > prev_candle['o'] and last_candle['o'] < prev_candle['c'])
+                
+                if is_strong_reversal:
+                    direction = "نزولی" if last_candle['c'] < last_candle['o'] else "صعودی"
+                    message = (f"🚨 **هشدار پایش معامله برای #{symbol}** 🚨\n\n"
+                               f"**نوع هشدار:** کندل بازگشتی قوی (Engulfing)\n"
+                               f"**توضیح:** یک کندل پوشای **{direction}** در تایم‌فریم ۵ دقیقه مشاهده شد. این می‌تواند نشانه تغییر سریع در روند کوتاه‌مدت باشد.\n\n"
+                               f"**پیشنهاد:** لطفاً پوزیشن خود را بازبینی کنید.")
+                    bot.sendMessage(chat_id, message, parse_mode='Markdown')
             except Exception as e:
-                logging.error(f"Error monitoring trade for {symbol}: {e}")
+                logging.error(f"Error monitoring trade for {symbol} for chat_id {chat_id}: {e}")
 
 # --- کنترل‌کننده‌های ربات ---
 def handle_chat(msg):
@@ -229,12 +250,9 @@ def handle_chat(msg):
                         reply_markup=get_main_menu_keyboard(chat_id))
                         
     elif text == '/stats':
-        # منطق نمایش آمار (شبیه‌سازی شده)
         stats_message = "📊 **آمار عملکرد سیگنال‌ها (آزمایشی)**\n\n"
-        stats_message += "- **تعداد کل سیگنال‌های صادر شده:** 15\n"
-        stats_message += "- **نرخ موفقیت (Win Rate):** 67%\n"
-        stats_message += "- **میانگین سود در معاملات موفق:** +8.5%\n"
-        stats_message += "- **میانگین ضرر در معاملات ناموفق:** -3.2%"
+        stats_message += "- **تعداد کل سیگنال‌های صادر شده:** (در حال جمع‌آوری)\n"
+        stats_message += "- **نرخ موفقیت (Win Rate):** (در حال محاسبه)"
         bot.sendMessage(chat_id, stats_message)
 
 def handle_callback_query(msg):
