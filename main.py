@@ -19,7 +19,6 @@ import pytz
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 NEWS_API_KEY = os.getenv('NEWS_API_KEY')
-TARGET_CHAT_ID = os.getenv('TARGET_CHAT_ID') # برای نوتیفیکیشن شکار سیگنال
 
 # --- کلاینت‌ها و سرویس‌ها ---
 app = FastAPI()
@@ -27,13 +26,18 @@ exchange = ccxt.kucoin()
 bot = telepot.Bot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 user_states = {}
 active_trades = {}
+signal_hunt_subscribers = set() # برای مدیریت کاربرانی که می‌خواهند نوتیفیکیشن دریافت کنند
 
 # --- توابع سازنده کیبورد ---
 def get_main_menu_keyboard(chat_id):
     buttons = [
         [InlineKeyboardButton(text='🔬 تحلیل عمیق یک ارز', callback_data='menu_deep_analysis')],
-        [InlineKeyboardButton(text='🎯 فعال/غیرفعال کردن شکار سیگنال', callback_data='menu_toggle_signal_hunt')],
     ]
+    if chat_id in signal_hunt_subscribers:
+        buttons.append([InlineKeyboardButton(text='🎯 غیرفعال کردن شکار سیگنال', callback_data='menu_toggle_signal_hunt')])
+    else:
+        buttons.append([InlineKeyboardButton(text='🎯 فعال کردن شکار سیگنال', callback_data='menu_toggle_signal_hunt')])
+        
     if chat_id in active_trades:
         buttons.append([InlineKeyboardButton(text=f"🚫 توقف پایش معامله {active_trades[chat_id]}", callback_data=f'monitor_stop_{active_trades[chat_id]}')])
     else:
@@ -41,9 +45,9 @@ def get_main_menu_keyboard(chat_id):
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_back_to_main_menu_keyboard():
+def get_back_to_main_menu_keyboard(chat_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🔙 بازگشت به منوی اصلی', callback_data='main_menu')]
+        [InlineKeyboardButton(text='🔙 بازگشت به منوی اصلی', callback_data=f'main_menu_{chat_id}')]
     ])
 
 # --- موتور تحلیل پیشرفته ---
@@ -83,21 +87,18 @@ def generate_full_report(symbol):
             logging.error(f"Data fetch error for {symbol}: {e}")
             return "خطا در ارتباط با صرافی. لطفاً لحظاتی بعد دوباره تلاش کنید."
 
-        # بخش ۱: خلاصه وضعیت
         report = f"🔬 **گزارش جامع تحلیلی برای #{symbol}**\n\n"
         last_price = df_1h.iloc[-1]['c']
         session_name, session_char = get_market_session()
         report += f"**قیمت فعلی:** `${last_price:,.2f}`\n"
         report += f"**سشن معاملاتی:** {session_name} ({session_char})\n\n"
         
-        # بخش ۲: استراتژی منتخب (شبیه‌سازی بک‌تست)
         report += "**--- استراتژی منتخب (مبتنی بر بک‌تست) ---**\n"
         strategy_name = "تقاطع EMA + سیگنال پرایس اکشن در نواحی SR"
         win_rate = 72
         report += f"**استراتژی بهینه برای این ارز:** {strategy_name}\n"
         report += f"**نرخ موفقیت گذشته (تخمینی):** {win_rate}٪\n\n"
 
-        # بخش ۳: تحلیل تکنیکال چندلایه
         report += "**--- تحلیل تکنیکال (چندلایه) ---**\n"
         trend_d = "صعودی" if ta.trend.ema_indicator(df_d['c'], 21).iloc[-1] > ta.trend.ema_indicator(df_d['c'], 50).iloc[-1] else "نزولی"
         trend_4h = "صعودی" if ta.trend.ema_indicator(df_4h['c'], 21).iloc[-1] > ta.trend.ema_indicator(df_4h['c'], 50).iloc[-1] else "نزولی"
@@ -120,7 +121,6 @@ def generate_full_report(symbol):
         else:
             report += "**سیگنال پرایس اکشن (۱ ساعته):** کندل آخر سیگنال واضحی ندارد.\n\n"
 
-        # بخش ۴: تحلیل فاندامنتال
         report += "**--- تحلیل فاندامنتال (اخبار) ---**\n"
         news_query = symbol.replace('USDT', '')
         url = f"https://newsapi.org/v2/everything?q={news_query}&language=en&sortBy=publishedAt&pageSize=3&apiKey={NEWS_API_KEY}"
@@ -132,7 +132,6 @@ def generate_full_report(symbol):
         else:
             report += "خبر مهم جدیدی یافت نشد.\n\n"
 
-        # بخش ۵: پیشنهاد معامله
         report += "**--- پیشنهاد معامله مبتنی بر AI (شبیه‌سازی شده) ---**\n"
         is_long_signal, confidence = check_long_signal_conditions(trend_d, trend_4h, last_1h_candle, support, lower_wick, body_size)
         if is_long_signal:
@@ -144,17 +143,15 @@ def generate_full_report(symbol):
             report += f"**منطق:** هم‌راستایی روند + سیگنال پرایس اکشن در ناحیه تقاضا.\n"
             report += f"**نقطه ورود:** `${entry:,.2f}` | **حد ضرر:** `${stop_loss:,.2f}` | **حد سود:** `${target:,.2f}` | **اهرم:** `x{leverage}`\n"
         else:
-            report += "⚠️ **نتیجه:** در حال حاضر، هیچ سیگنال معاملاتی با احتمال موفقیت بالا یافت نشد. **توصیه می‌شود وارد معامله نشوید.**"
+            report += "⚠️ **نتیجه:** در حال حاضر، هیچ سیگنال معاملاتی با احتمال موفقیت بالا یافت نشد."
             
         return report
-
     except Exception as e:
         logging.error(f"Critical error in full report for {symbol}: {e}")
         return "یک خطای پیش‌بینی نشده در فرآیند تحلیل رخ داد."
 
-
 def hunt_signals():
-    """در پس‌زمینه به طور مداوم بازار را اسکن و در صورت یافتن سیگنال، نوتیفیکیشن ارسال می‌کند."""
+    """در پس‌زمینه بازار را اسکن و برای اعضا نوتیفیکیشن ارسال می‌کند."""
     watchlist = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'AVAX', 'LINK', 'MATIC', 'DOT', 'ADA', 'LTC', 'BNB', 'NEAR', 'ATOM', 'FTM']
     
     while True:
@@ -178,8 +175,13 @@ def hunt_signals():
                 if is_long and confidence > 85:
                     report = generate_full_report(symbol)
                     message = f"🎯 **شکار سیگنال با اطمینان بالا یافت شد!** 🎯\n\n{report}"
-                    if TARGET_CHAT_ID:
-                        bot.sendMessage(TARGET_CHAT_ID, message, parse_mode='Markdown')
+                    for chat_id in list(signal_hunt_subscribers):
+                        try:
+                            bot.sendMessage(chat_id, message, parse_mode='Markdown')
+                        except Exception as e:
+                            logging.error(f"Failed to send signal to {chat_id}: {e}")
+                            if 'Forbidden' in str(e):
+                                signal_hunt_subscribers.remove(chat_id)
                     time.sleep(30 * 60)
                     break
             except Exception as e:
@@ -232,25 +234,31 @@ def handle_callback_query(msg):
     chat_id = from_id
     bot.answerCallbackQuery(query_id)
     
-    if query_data == 'main_menu':
+    if query_data.startswith('main_menu'):
         user_states[chat_id] = 'main_menu'
         bot.editMessageText((chat_id, msg['message']['message_id']), 'منوی اصلی:', reply_markup=get_main_menu_keyboard(chat_id))
 
     elif query_data == 'menu_deep_analysis':
         user_states[chat_id] = 'awaiting_symbol_analysis'
         bot.editMessageText((chat_id, msg['message']['message_id']), 'لطفاً نماد ارز را برای تحلیل وارد کنید (مثلاً: BTC).',
-                        reply_markup=get_back_to_main_menu_keyboard())
+                        reply_markup=get_back_to_main_menu_keyboard(chat_id))
         
-    elif query_data == 'menu_signal_hunt':
-        # این گزینه دیگر کاری انجام نمی‌دهد چون شکارچی به طور خودکار نوتیفیکیشن می‌فرستد
-        bot.editMessageText((chat_id, msg['message']['message_id']),
-                             "🎯 **شکارچی سیگنال ۲۴/۷ فعال است.**\n\nبه محض یافتن یک فرصت معاملاتی با اطمینان بالا، یک نوتیفیکیشن خودکار برای شما ارسال خواهد شد.",
-                             reply_markup=get_back_to_main_menu_keyboard())
-
+    elif query_data == 'menu_toggle_signal_hunt':
+        if chat_id in signal_hunt_subscribers:
+            signal_hunt_subscribers.remove(chat_id)
+            bot.editMessageText((chat_id, msg['message']['message_id']),
+                                "✅ **شکار سیگنال با موفقیت غیرفعال شد.**\n\nدیگر نوتیفیکیشن‌های خودکار را دریافت نخواهید کرد.",
+                                reply_markup=get_main_menu_keyboard(chat_id))
+        else:
+            signal_hunt_subscribers.add(chat_id)
+            bot.editMessageText((chat_id, msg['message']['message_id']),
+                                "✅ **شکار سیگنال با موفقیت فعال شد.**\n\nبه محض یافتن یک فرصت معاملاتی با اطمینان بالا، یک نوتیفیکیشن خودکار برای شما ارسال خواهد شد.",
+                                reply_markup=get_main_menu_keyboard(chat_id))
+        
     elif query_data == 'menu_monitor_trade':
         user_states[chat_id] = 'awaiting_symbol_monitor'
         bot.editMessageText((chat_id, msg['message']['message_id']), 'لطفاً نماد ارزی که در آن معامله باز کرده‌اید را وارد کنید (مثلاً: ETH).',
-                        reply_markup=get_back_to_main_menu_keyboard())
+                        reply_markup=get_back_to_main_menu_keyboard(chat_id))
                         
     elif query_data.startswith('monitor_stop_'):
         symbol_to_stop = query_data.split('_')[2]
@@ -266,8 +274,8 @@ def run_web_server():
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not TARGET_CHAT_ID:
-        logging.fatal("TELEGRAM_TOKEN or TARGET_CHAT_ID not found!")
+    if not TELEGRAM_TOKEN:
+        logging.fatal("TELEGRAM_TOKEN not found!")
     else:
         threading.Thread(target=trade_monitor_loop, daemon=True, name="TradeMonitorThread").start()
         threading.Thread(target=hunt_signals, daemon=True, name="SignalHunterThread").start()
