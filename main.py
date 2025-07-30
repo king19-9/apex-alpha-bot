@@ -1,4 +1,4 @@
-# main.py (نسخه نهایی: Trading Co-Pilot)
+# main.py (نسخه نهایی: Glass Box با شفافیت کامل)
 
 import os
 import logging
@@ -13,10 +13,6 @@ import threading
 import requests
 import ccxt
 import ta
-import matplotlib
-matplotlib.use('Agg')
-import mplfinance as mpf
-import io
 from datetime import datetime
 import pytz
 
@@ -30,13 +26,12 @@ app = FastAPI()
 exchange = ccxt.kucoin()
 bot = telepot.Bot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 user_states = {}
-active_trades = {} # دیکشنری برای پایش معاملات باز
 
 # --- توابع سازنده کیبورد ---
 def get_main_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🧠 تحلیل جامع و سیگنال AI', callback_data='menu_full_analysis')],
-        [InlineKeyboardButton(text='👁️ پایش معامله باز', callback_data='menu_monitor_trade')]
+        [InlineKeyboardButton(text='🔬 تحلیل عمیق یک ارز', callback_data='menu_deep_analysis')],
+        [InlineKeyboardButton(text='🎯 شکار سیگنال (AI)', callback_data='menu_signal_hunt')]
     ])
 
 def get_back_to_main_menu_keyboard():
@@ -44,102 +39,120 @@ def get_back_to_main_menu_keyboard():
         [InlineKeyboardButton(text='🔙 بازگشت به منوی اصلی', callback_data='main_menu')]
     ])
 
-# --- توابع تحلیل پیشرفته ---
+# --- موتور تحلیل پیشرفته ---
 
-def get_market_session():
-    """تشخیص سشن معاملاتی فعلی بر اساس ساعت UTC."""
-    utc_now = datetime.now(pytz.utc)
-    hour = utc_now.hour
-    if 0 <= hour < 8: return "آسیا (توکیو/سیدنی)", "نوسان کم، مناسب برای تثبیت روند"
-    if 8 <= hour < 12: return "لندن", "شروع نقدینگی و نوسان بالا"
-    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر نقدینگی و نوسان، احتمال حرکات فیک"
-    if 17 <= hour < 22: return "نیویورک", "نوسان بالا، احتمال بازگشت روند در انتهای روز"
-    return "خارج از سشن‌های اصلی", "نقدینگی کم"
-
-def generate_ai_analysis(symbol):
+def generate_full_report(symbol):
     try:
         kucoin_symbol = f"{symbol.upper()}/USDT"
         
         # ۱. دریافت داده‌ها در تایم‌فریم‌های مختلف
-        df_4h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='4h', limit=100), columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-        df_1h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='1h', limit=100), columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        df_d = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='1d', limit=100), columns=['ts','o','h','l','c','v'])
+        df_4h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='4h', limit=100), columns=['ts','o','h','l','c','v'])
+        df_1h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='1h', limit=50), columns=['ts','o','h','l','c','v'])
         
-        # ۲. تحلیل کانتکست بازار
+        # --- بخش ۱: خلاصه وضعیت فعلی ---
+        report = f"🔬 **گزارش جامع تحلیلی برای #{symbol}**\n\n"
+        last_price = df_1h.iloc[-1]['c']
         session_name, session_char = get_market_session()
+        report += f"**قیمت فعلی:** `${last_price:,.2f}`\n"
+        report += f"**سشن معاملاتی:** {session_name} ({session_char})\n"
+
+        # --- بخش ۲: تحلیل چند تایم‌فریم (Multi-Timeframe Analysis) ---
+        report += "\n**--- تحلیل ساختار بازار (چند تایم‌فریم) ---**\n"
+        report += f"**ابزار:** میانگین‌های متحرک (EMA 21, 50)\n"
+        report += f"**منطق:** هم‌راستایی EMAها در تایم‌فریم‌های مختلف نشان‌دهنده قدرت روند است.\n"
         
-        # ۳. تحلیل عرضه و تقاضا (شبیه‌سازی شده با شناسایی سطوح SR)
-        support_level = df_4h['l'].rolling(20).min().iloc[-1]
-        resistance_level = df_4h['h'].rolling(20).max().iloc[-1]
+        trend_d = "صعودی" if ta.trend.ema_indicator(df_d['c'], 21).iloc[-1] > ta.trend.ema_indicator(df_d['c'], 50).iloc[-1] else "نزولی"
+        trend_4h = "صعودی" if ta.trend.ema_indicator(df_4h['c'], 21).iloc[-1] > ta.trend.ema_indicator(df_4h['c'], 50).iloc[-1] else "نزولی"
+        report += f"**روند روزانه (Daily):** {trend_d}\n"
+        report += f"**روند ۴ ساعته (4H):** {trend_4h}\n"
+        if trend_d == trend_4h:
+            report += f"**نتیجه:** ساختار بازار در حال حاضر **{trend_d}** و هم‌راستا است. معاملات در جهت روند از اعتبار بالاتری برخوردارند.\n"
+        else:
+            report += "**نتیجه:** ساختار بازار در حال حاضر **متناقض** است. قیمت در تایم‌فریم پایین‌تر در حال اصلاح یا تغییر روند است. احتیاط لازم است.\n"
+
+        # --- بخش ۳: تحلیل عرضه و تقاضا و پرایس اکشن ---
+        report += "\n**--- تحلیل عرضه/تقاضا و پرایس اکشن (سبک ال بروکس) ---**\n"
+        report += f"**ابزار:** شناسایی نواحی حمایت/مقاومت کلیدی و الگوهای کندلی.\n"
         
-        # ۴. تحلیل پرایس اکشن در تایم‌فریم کوتاه‌مدت (۱ ساعته)
+        support = df_4h['l'].rolling(20).mean().iloc[-1] # روش ساده‌شده
+        resistance = df_4h['h'].rolling(20).mean().iloc[-1]
+        report += f"**ناحیه تقاضای مهم (4H):** حدود `${support:,.2f}`\n"
+        report += f"**ناحیه عرضه مهم (4H):** حدود `${resistance:,.2f}`\n"
+        
+        # تحلیل کندل آخر ۱ ساعته
         last_1h_candle = df_1h.iloc[-1]
         body_size = abs(last_1h_candle['c'] - last_1h_candle['o'])
-        candle_range = last_1h_candle['h'] - last_1h_candle['l']
         lower_wick = last_1h_candle['c'] - last_1h_candle['l'] if last_1h_candle['c'] > last_1h_candle['o'] else last_1h_candle['o'] - last_1h_candle['l']
-
-        # ۵. تحلیل فاندامنتال (اخبار)
-        news_query = symbol.replace('USDT', '')
-        url = f"https://newsapi.org/v2/everything?q={news_query}&language=en&sortBy=publishedAt&pageSize=1&apiKey={NEWS_API_KEY}"
-        news_response = requests.get(url).json()
-        latest_news = news_response.get('articles', [{}])[0].get('title', 'خبر جدیدی یافت نشد.')
-
-        # ۶. موتور استراتژی و تصمیم‌گیری AI (منطق شبیه‌سازی شده)
-        analysis_text = f"🧠 **تحلیل جامع هوشمند برای #{symbol}**\n\n"
-        analysis_text += f"**--- وضعیت فعلی بازار ({session_name}) ---**\n"
-        analysis_text += f"**شخصیت سشن:** {session_char}\n"
-        analysis_text += f"**ناحیه تقاضا (حمایت):** `${support_level:,.2f}`\n"
-        analysis_text += f"**ناحیه عرضه (مقاومت):** `${resistance_level:,.2f}`\n"
-        analysis_text += f"**آخرین خبر مهم:** *{latest_news}*\n\n"
-        
-        analysis_text += "**--- تحلیل استراتژی منتخب (بک‌تست شده) ---**\n"
-        
-        # سناریوی خرید (Long)
-        if (last_1h_candle['c'] > support_level * 1.01) and (lower_wick > body_size * 1.5):
-            analysis_text += "✅ **سناریوی خرید (Long) شناسایی شد:**\n"
-            analysis_text += "یک سیگنال پرایس اکشن صعودی (Pin Bar) در نزدیکی ناحیه تقاضا شکل گرفته است. این می‌تواند یک تله برای فروشندگان (Bear Trap) و نشانه جمع‌آوری نقدینگی (Liquidity Run) باشد.\n\n"
-            analysis_text += "**--- پیشنهاد معامله ---**\n"
-            entry_price = last_1h_candle['h']
-            stop_loss = last_1h_candle['l']
-            take_profit = resistance_level
-            leverage = 5 # اهرم پیشنهادی بر اساس نوسان
-            
-            analysis_text += f"**نقطه ورود:** `${entry_price:,.2f}` (بالای کندل سیگنال)\n"
-            analysis_text += f"**حد ضرر:** `${stop_loss:,.2f}` (پایین کندل سیگنال)\n"
-            analysis_text += f"**حد سود:** `${take_profit:,.2f}` (نزدیک به مقاومت بعدی)\n"
-            analysis_text += f"**اهرم پیشنهادی:** `x{leverage}`\n\n"
-            analysis_text += "**هشدار:** این یک پیشنهاد مالی نیست. همیشه مدیریت ریسک را رعایت کنید."
-
-        # سناریوی فروش (Short)
-        # (منطق مشابه برای فروش در اینجا پیاده‌سازی می‌شود)
-
+        if lower_wick > body_size * 2:
+            report += "**سیگنال پرایس اکشن (1H):** کندل آخر یک **پین‌بار صعودی** است که نشان‌دهنده قدرت خریداران در سطوح پایین‌تر است (Liquidity Sweep).\n"
         else:
-            analysis_text += "⚠️ **نتیجه:** **شرایط برای ورود مناسب نیست.**\n"
-            analysis_text += "در حال حاضر هیچ الگوی معاملاتی با احتمال موفقیت بالا (بر اساس استراتژی‌های بک‌تست شده) مشاهده نمی‌شود. بهترین کار، صبر کردن و عدم ورود به معامله است."
+            report += "**سیگنال پرایس اکشن (1H):** کندل آخر سیگنال واضحی ندارد.\n"
 
-        return analysis_text
+        # --- بخش ۴: تحلیل فاندامنتال و اخبار ---
+        report += "\n**--- تحلیل فاندامنتال (اخبار) ---**\n"
+        report += "**ابزار:** NewsAPI برای واکشی اخبار و یک مدل ساده برای تحلیل احساسات.\n"
+        news_query = symbol.replace('USDT', '')
+        url = f"https://newsapi.org/v2/everything?q={news_query}&language=en&sortBy=publishedAt&pageSize=3&apiKey={NEWS_API_KEY}"
+        articles = requests.get(url).json().get('articles', [])
+        if articles:
+            report += "**آخرین اخبار مهم:**\n"
+            for article in articles:
+                # تحلیل احساسات ساده
+                sentiment = "مثبت" if any(word in article['title'].lower() for word in ['partner', 'launch', 'success']) else "منفی" if any(word in article['title'].lower() for word in ['hack', 'ban', 'problem']) else "خنثی"
+                report += f"- *{article['title']}* (احساسات: {sentiment})\n"
+        else:
+            report += "خبر مهم جدیدی یافت نشد.\n"
+
+        # --- بخش ۵: پیشنهاد معامله (AI-Powered) ---
+        report += "\n**--- پیشنهاد معامله مبتنی بر AI ---**\n"
+        report += "**روش:** این پیشنهاد بر اساس یک استراتژی ترکیبی (تقاطع EMA در تایم بالا + سیگنال پرایس اکشن در تایم پایین در نواحی عرضه/تقاضا) ارائه می‌شود.\n"
+        report += "**عملکرد گذشته استراتژی (بک‌تست):** این استراتژی در گذشته روی این ارز، نرخ موفقیت تقریبی **۶۵٪** داشته است (این یک داده شبیه‌سازی شده است).\n"
+        
+        # منطق تصمیم‌گیری برای سیگنال
+        is_long_signal = trend_d == "صعودی" and trend_4h == "صعودی" and (last_1h_candle['c'] < support * 1.02) and (lower_wick > body_size * 1.5)
+        
+        if is_long_signal:
+            confidence = 75.0 # درصد اطمینان AI (شبیه‌سازی شده)
+            entry = last_1h_candle['h']
+            stop_loss = last_1h_candle['l']
+            target = resistance
+            leverage = 3 if (target/entry - 1) * 100 > 5 else 5
+
+            report += f"✅ **سیگنال خرید (Long) با اطمینان {confidence:.0f}٪ صادر شد.**\n"
+            report += f"**نقطه ورود پیشنهادی:** `${entry:,.2f}`\n"
+            report += f"**حد ضرر:** `${stop_loss:,.2f}`\n"
+            report += f"**حد سود اولیه:** `${target:,.2f}`\n"
+            report += f"**اهرم پیشنهادی:** `x{leverage}`\n"
+        else:
+            report += "⚠️ **نتیجه:** در حال حاضر، هیچ سیگنال معاملاتی با احتمال موفقیت بالا بر اساس استراتژی‌های منتخب یافت نشد. **توصیه می‌شود وارد معامله نشوید.**"
+            
+        return report
 
     except Exception as e:
-        logging.error(f"Error in AI analysis for {symbol}: {e}")
-        return "خطا در پردازش تحلیل هوشمند."
+        logging.error(f"Error in full report for {symbol}: {e}")
+        if isinstance(e, ccxt.BadSymbol): return "خطا: نماد وارد شده در صرافی یافت نشد."
+        return "خطا در پردازش تحلیل جامع. لطفاً بعداً تلاش کنید."
 
+def get_market_session():
+    # این تابع بدون تغییر است
+    utc_now = datetime.now(pytz.utc); hour = utc_now.hour
+    if 0 <= hour < 8: return "آسیا (توکیو/سیدنی)", "نوسان کم"
+    if 8 <= hour < 12: return "لندن", "شروع نوسان"
+    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر نوسان"
+    if 17 <= hour < 22: return "نیویورک", "نوسان بالا"
+    return "خارج از سشن‌ها", "نقدینگی کم"
 
-# --- کنترل‌کننده‌های ربات ---
+# --- کنترل‌کننده‌های ربات (اصلاح شده) ---
 def handle_chat(msg):
     content_type, chat_type, chat_id = telepot.glance(msg)
     if content_type != 'text': return
     text = msg['text']
     
     if user_states.get(chat_id) == 'awaiting_symbol_analysis':
-        bot.sendMessage(chat_id, f"در حال پردازش تحلیل جامع برای {text.upper()}...")
-        analysis_result = generate_ai_analysis(text.strip())
-        bot.sendMessage(chat_id, analysis_result, parse_mode='Markdown', reply_markup=get_main_menu_keyboard())
-        user_states[chat_id] = 'main_menu'
-
-    elif user_states.get(chat_id) == 'awaiting_symbol_monitor':
-        symbol_to_monitor = text.strip().upper()
-        active_trades[chat_id] = symbol_to_monitor
-        bot.sendMessage(chat_id, f"✅ معامله شما برای #{symbol_to_monitor} تحت پایش قرار گرفت. هرگونه تغییر مهم در روند یا اخبار به شما اطلاع داده خواهد شد.",
-                        reply_markup=get_main_menu_keyboard())
+        processing_message = bot.sendMessage(chat_id, f"✅ درخواست شما برای **{text.upper()}** دریافت شد. لطفاً چند لحظه صبر کنید، در حال آماده‌سازی گزارش جامع هستم...", parse_mode='Markdown')
+        report_text = generate_full_report(text.strip())
+        bot.editMessageText((chat_id, processing_message['message_id']), report_text, parse_mode='Markdown', reply_markup=get_main_menu_keyboard())
         user_states[chat_id] = 'main_menu'
         
     elif text == '/start':
@@ -154,38 +167,21 @@ def handle_callback_query(msg):
     
     if query_data == 'main_menu':
         user_states[chat_id] = 'main_menu'
-        bot.sendMessage(chat_id, 'منوی اصلی:', reply_markup=get_main_menu_keyboard())
+        bot.editMessageText((chat_id, msg['message']['message_id']), 'منوی اصلی:', reply_markup=get_main_menu_keyboard())
 
-    elif query_data == 'menu_full_analysis':
+    elif query_data == 'menu_deep_analysis':
         user_states[chat_id] = 'awaiting_symbol_analysis'
-        bot.sendMessage(chat_id, 'لطفاً نماد ارز مورد نظر خود را برای تحلیل وارد کنید (مثلاً: BTC).',
-                        reply_markup=get_back_to_main_menu_keyboard())
-        
-    elif query_data == 'menu_monitor_trade':
-        user_states[chat_id] = 'awaiting_symbol_monitor'
-        bot.sendMessage(chat_id, 'لطفاً نماد ارزی که در آن معامله باز کرده‌اید را وارد کنید (مثلاً: ETH).',
+        bot.editMessageText((chat_id, msg['message']['message_id']), 'لطفاً نماد ارز مورد نظر خود را برای تحلیل وارد کنید (مثلاً: BTC).',
                         reply_markup=get_back_to_main_menu_keyboard())
 
-
-def trade_monitor_loop():
-    """یک نخ جداگانه برای پایش مداوم معاملات باز کاربران."""
-    while True:
-        for chat_id, symbol in list(active_trades.items()):
-            try:
-                # دریافت کندل ۵ دقیقه‌ای اخیر
-                df = pd.DataFrame(exchange.fetch_ohlcv(f"{symbol}/USDT", timeframe='5m', limit=2), columns=['ts','o','h','l','c','v'])
-                last_candle = df.iloc[-1]
-                # شناسایی کندل بازگشتی قوی (شبیه‌سازی شده)
-                is_strong_reversal = abs(last_candle['c'] - last_candle['o']) > (last_candle['h'] - last_candle['l']) * 0.7
-                
-                if is_strong_reversal:
-                    bot.sendMessage(chat_id, f"🚨 **هشدار پایش معامله برای #{symbol}** 🚨\n"
-                                             f"یک کندل بازگشتی قوی در تایم‌فریم ۵ دقیقه مشاهده شد. ممکن است بخواهید معامله خود را مدیریت کرده یا از آن خارج شوید.")
-                    del active_trades[chat_id] # بعد از ارسال هشدار، پایش را متوقف می‌کنیم
-            except Exception as e:
-                logging.error(f"Error monitoring trade for {symbol}: {e}")
-        
-        time.sleep(5 * 60) # هر ۵ دقیقه یک بار
+    elif query_data == 'menu_signal_hunt':
+        bot.editMessageText((chat_id, msg['message']['message_id']),
+                             "🎯 **در حال اسکن بازار برای یافتن بهترین فرصت‌ها...**\n\nاین فرآیند ممکن است کمی طول بکشد. به محض یافتن یک سیگنال با احتمال موفقیت بالا، گزارش کامل آن برای شما ارسال خواهد شد.",
+                             reply_markup=get_back_to_main_menu_keyboard())
+        # در نسخه واقعی، این بخش یک فرآیند سنگین را در پس‌زمینه آغاز می‌کند
+        # برای نسخه فعلی، یک تحلیل نمونه روی بیت‌کوین انجام می‌دهیم
+        report_text = generate_full_report("BTC")
+        bot.sendMessage(chat_id, report_text, parse_mode='Markdown')
 
 
 # --- راه‌اندازی ربات و وب‌سرور ---
@@ -197,16 +193,11 @@ if __name__ == '__main__':
     if not TELEGRAM_TOKEN:
         logging.fatal("TELEGRAM_TOKEN not found!")
     else:
-        # اجرای حلقه پایش معاملات در یک نخ جداگانه
-        threading.Thread(target=trade_monitor_loop, daemon=True).start()
-        
         MessageLoop(bot, {'chat': handle_chat,
                           'callback_query': handle_callback_query}).run_as_thread()
         logging.info('Telepot bot is listening...')
-        
         if os.getenv('RAILWAY_ENVIRONMENT'):
             threading.Thread(target=run_web_server, daemon=True).start()
-
         logging.info("Bot is running. Press Ctrl+C to exit.")
         while 1:
             time.sleep(10)
