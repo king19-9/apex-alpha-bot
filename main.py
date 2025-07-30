@@ -1,4 +1,4 @@
-# main.py (نسخه نهایی با تحلیل پرایس اکشن ال بروکس)
+# main.py (نسخه نهایی: ترکیب تحلیل اندیکاتورها و پرایس اکشن ال بروکس)
 
 import os
 import logging
@@ -33,7 +33,7 @@ user_states = {}
 # --- توابع سازنده کیبورد ---
 def get_main_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📊 تحلیل جامع پرایس اکشن', callback_data='menu_full_analysis')]
+        [InlineKeyboardButton(text='📊 تحلیل جامع ارز', callback_data='menu_full_analysis')]
     ])
 
 def get_back_to_main_menu_keyboard():
@@ -44,108 +44,137 @@ def get_back_to_main_menu_keyboard():
 # --- توابع تحلیل پیشرفته ---
 
 def get_comprehensive_analysis(symbol):
+    """تابع اصلی که تمام تحلیل‌ها را جمع‌آوری و بسته‌بندی می‌کند."""
     try:
         kucoin_symbol = f"{symbol.upper()}/USDT"
+        
+        # ۱. دریافت داده‌های کندل (تایم‌فریم ۴ ساعته برای تحلیل جامع)
         ohlcv = exchange.fetch_ohlcv(kucoin_symbol, timeframe='4h', limit=200)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
 
-        chart_buffer = create_price_action_chart(df.tail(70), symbol)
-        ai_analysis_text = generate_al_brooks_analysis(df, symbol)
+        # ۲. محاسبه اندیکاتورها برای هر دو تحلیل
+        df = calculate_indicators(df)
+
+        # ۳. ساخت چارت حرفه‌ای با mplfinance
+        chart_buffer = create_professional_chart(df.tail(70), symbol)
+
+        # ۴. تولید تحلیل هوش مصنوعی (ترکیبی)
+        ai_analysis_text = generate_combined_analysis(df, symbol)
 
         return chart_buffer, ai_analysis_text
+
     except Exception as e:
         logging.error(f"Error in comprehensive analysis for {symbol}: {e}")
-        if isinstance(e, ccxt.BadSymbol): return None, "خطا: نماد وارد شده در صرافی یافت نشد."
+        if isinstance(e, ccxt.BadSymbol):
+            return None, "خطا: نماد وارد شده در صرافی یافت نشد."
         return None, "خطا در پردازش تحلیل. لطفاً بعداً تلاش کنید."
 
-def create_price_action_chart(df, symbol):
-    # این تابع مشابه قبل است و نیازی به تغییر ندارد
-    ap = [mpf.make_addplot(df['close'].rolling(20).mean(), panel=0, color='blue', width=0.7)]
-    style = mpf.make_marketcolors(up='green', down='red', wick={'up':'green','down':'red'})
+def calculate_indicators(df):
+    """یکجا تمام اندیکاتورهای لازم را محاسبه می‌کند."""
+    df['rsi'] = ta.momentum.rsi(df['close'])
+    df['macd_diff'] = ta.trend.macd_diff(df['close'])
+    df['ema_50'] = ta.trend.ema_indicator(df['close'], window=50)
+    df['ema_200'] = ta.trend.ema_indicator(df['close'], window=200)
+    return df
+
+def create_professional_chart(df, symbol):
+    """ساخت چارت حرفه‌ای با اندیکاتورهای کلیدی."""
+    ap = [
+        mpf.make_addplot(df['ema_50'], panel=0, color='blue', width=0.7, ylabel='Price'),
+        mpf.make_addplot(df['ema_200'], panel=0, color='orange', width=1.5),
+        mpf.make_addplot(df['rsi'], panel=1, color='purple', ylabel='RSI'),
+        mpf.make_addplot(df['macd_diff'], type='bar', panel=2, color='green', ylabel='MACD Hist')
+    ]
+    
+    style = mpf.make_marketcolors(up='#26a69a', down='#ef5350', wick='inherit')
     mpf_style = mpf.make_mpf_style(marketcolors=style, base_mpf_style='nightclouds')
+    
     buf = io.BytesIO()
     mpf.plot(df, type='candle', style=mpf_style,
-             title=f'\nتحلیل پرایس اکشن {symbol} (4H)',
-             volume=True, addplot=ap, panel_ratios=(4,1),
-             savefig=dict(fname=buf, dpi=120))
+             title=f'\nتحلیل جامع {symbol} (4H)',
+             volume=True, addplot=ap, panel_ratios=(6,2,2),
+             savefig=dict(fname=buf, dpi=120),
+             datetime_format='%b %d, %H:%M')
     buf.seek(0)
     return buf
 
-def generate_al_brooks_analysis(df, symbol):
-    """(شبیه‌سازی هوشمند) تفسیر پرایس اکشن به سبک ال بروکس"""
-    analysis = f"🧠 **تحلیل پرایس اکشن برای #{symbol} (سبک ال بروکس)**\n\n"
+
+def generate_combined_analysis(df, symbol):
+    """تفسیر ترکیبی اندیکاتورها و پرایس اکشن به سبک ال بروکس"""
+    analysis = f"🧠 **تحلیل جامع برای #{symbol}**\n\n"
+    last_candle = df.iloc[-1]
     
-    # استخراج ۵ کندل آخر برای تحلیل دقیق
-    last_5_candles = df.iloc[-5:]
-    last_candle = last_5_candles.iloc[-1]
-    
-    # ۱. تشخیص حالت کلی بازار (روند یا رنج)
+    # --- بخش ۱: تحلیل مبتنی بر اندیکاتور ---
+    analysis += "**--- تحلیل کمی (اندیکاتورها) ---**\n"
+    # روند
+    if last_candle['ema_50'] > last_candle['ema_200']:
+        analysis += "📈 **روند:** صعودی (میانگین متحرک کوتاه مدت بالاتر از بلند مدت است).\n"
+    else:
+        analysis += "📉 **روند:** نزولی (میانگین متحرک کوتاه مدت پایین‌تر از بلند مدت است).\n"
+    # هیجان بازار
+    if last_candle['rsi'] > 70:
+        analysis += "🥵 **هیجان:** بازار در حالت اشباع خرید است (RSI > 70).\n"
+    elif last_candle['rsi'] < 30:
+        analysis += "🥶 **هیجان:** بازار در حالت اشباع فروش است (RSI < 30).\n"
+    else:
+        analysis += "😐 **هیجان:** خنثی (RSI در محدوده نرمال).\n"
+    # قدرت حرکت
+    if last_candle['macd_diff'] > 0:
+        analysis += "🟢 **قدرت:** قدرت خریداران در حال افزایش است (MACD مثبت).\n"
+    else:
+        analysis += "🔴 **قدرت:** قدرت فروشندگان در حال افزایش است (MACD منفی).\n"
+        
+    # --- بخش ۲: تحلیل پرایس اکشن (ال بروکس) ---
+    analysis += "\n**--- تحلیل پرایس اکشن (ال بروکس) ---**\n"
+    # تشخیص روند یا رنج
     body_sizes = abs(df['close'] - df['open'])
     avg_body_size = body_sizes.rolling(20).mean().iloc[-1]
-    is_trending = body_sizes.iloc[-1] > avg_body_size * 1.5 # اگر کندل آخر بزرگ باشد، نشانه روند است
-
-    if is_trending:
-        analysis += "📈 **وضعیت بازار:** در یک روند قوی (Strong Trend) قرار داریم. کندل‌های اخیر بدنه‌های بزرگی دارند.\n"
+    if body_sizes.iloc[-1] > avg_body_size * 1.5:
+        analysis += "📈 **وضعیت:** بازار در یک روند قوی (Strong Trend) قرار دارد.\n"
     else:
-        analysis += "↔️ **وضعیت بازار:** در یک محدوده ترید (Trading Range) قرار داریم. بازار در حال حاضر بلاتکلیف است.\n"
-        
-    # ۲. شناسایی کندل سیگنال (Signal Bar) در کندل آخر
+        analysis += "↔️ **وضعیت:** بازار در یک محدوده ترید (Trading Range) قرار دارد.\n"
+    
+    # شناسایی کندل سیگنال
     body_size = abs(last_candle['close'] - last_candle['open'])
     candle_range = last_candle['high'] - last_candle['low']
     upper_wick = last_candle['high'] - max(last_candle['open'], last_candle['close'])
     lower_wick = min(last_candle['open'], last_candle['close']) - last_candle['low']
-
-    is_bullish_pin_bar = lower_wick > body_size * 2 and upper_wick < body_size
-    is_bearish_pin_bar = upper_wick > body_size * 2 and lower_wick < body_size
-    
-    if is_bullish_pin_bar:
-        analysis += "🐂 **کندل سیگنال:** یک پین‌بار صعودی (Bullish Pin Bar) شناسایی شد. این کندل نشان‌دهنده رد شدن قیمت‌های پایین‌تر توسط خریداران و احتمال صعود است.\n"
-    elif is_bearish_pin_bar:
-        analysis += "🐻 **کندل سیگنال:** یک پین‌بار نزولی (Bearish Pin Bar) شناسایی شد. این کندل نشان‌دهنده رد شدن قیمت‌های بالاتر توسط فروشندگان و احتمال نزول است.\n"
-
-    # ۳. تحلیل فشار خرید و فروش
-    recent_closes = last_5_candles['close'].values
-    if all(recent_closes[i] <= recent_closes[i+1] for i in range(len(recent_closes)-1)):
-        analysis += "🟢 **فشار بازار:** فشار خرید در ۵ کندل اخیر غالب بوده است (Consecutive Bull Bars).\n"
-    elif all(recent_closes[i] >= recent_closes[i+1] for i in range(len(recent_closes)-1)):
-        analysis += "🔴 **فشار بازار:** فشار فروش در ۵ کندل اخیر غالب بوده است (Consecutive Bear Bars).\n"
-
-    # ۴. جمع‌بندی استراتژیک به سبک ال بروکس
-    analysis += "\n**جمع‌بندی استراتژیک:**\n"
-    if is_trending and is_bullish_pin_bar:
-        analysis += "در یک روند صعودی، یک کندل سیگنال خرید ظاهر شده. استراتژی مناسب، خرید در بالای این کندل سیگنال با هدف ادامه روند است (Trend Continuation)."
-    elif is_trending and is_bearish_pin_bar:
-        analysis += "در یک روند نزولی، یک کندل سیگنال فروش ظاهر شده. استراتژی مناسب، فروش در پایین این کندل سیگنال با هدف ادامه روند است."
-    elif not is_trending and is_bullish_pin_bar:
-        analysis += "در یک محدوده ترید، یک پین‌بار صعودی در کف محدوده می‌تواند نشانه خوبی برای خرید با هدف رسیدن به سقف محدوده باشد (Range Trading)."
-    elif not is_trending and is_bearish_pin_bar:
-        analysis += "در یک محدوده ترید، یک پین‌بار نزولی در سقف محدوده می‌تواند نشانه خوبی برای فروش با هدف رسیدن به کف محدوده باشد."
+    if lower_wick > body_size * 2 and upper_wick < body_size:
+        analysis += "🐂 **کندل سیگنال:** یک پین‌بار صعودی قوی (Bullish Pin Bar) شناسایی شد.\n"
+    elif upper_wick > body_size * 2 and lower_wick < body_size:
+        analysis += "🐻 **کندل سیگنال:** یک پین‌بار نزولی قوی (Bearish Pin Bar) شناسایی شد.\n"
     else:
-        analysis += "در حال حاضر هیچ سیگنال واضحی (High Probability Setup) وجود ندارد. بهترین استراتژی صبر کردن است. بازار همیشه فرصت دیگری خواهد داد."
+        analysis += "캔 **کندل سیگنال:** کندل آخر یک سیگنال پرایس اکشن واضح نیست.\n"
+        
+    # --- بخش ۳: جمع‌بندی استراتژیک (ترکیب دو تحلیل) ---
+    analysis += "\n**--- جمع‌بندی استراتژیک ---**\n"
+    # منطق ترکیبی (شبیه‌سازی AI)
+    if (last_candle['ema_50'] > last_candle['ema_200']) and (lower_wick > body_size * 2) and (last_candle['rsi'] < 50):
+        analysis += "✅ **نتیجه:** **سیگنال خرید با احتمال بالا.** ترکیب روند صعودی کلی با یک کندل سیگنال پرایس اکشن قوی و عدم اشباع خرید، یک فرصت مناسب را نشان می‌دهد."
+    elif (last_candle['ema_50'] < last_candle['ema_200']) and (upper_wick > body_size * 2) and (last_candle['rsi'] > 50):
+        analysis += "❌ **نتیجه:** **سیگنال فروش با احتمال بالا.** ترکیب روند نزولی کلی با یک کندل سیگنال پرایس اکشن قوی و عدم اشباع فروش، یک فرصت مناسب را نشان می‌دهد."
+    else:
+        analysis += "⚠️ **نتیجه:** **شرایط نامشخص.** سیگنال‌های اندیکاتورها و پرایس اکشن در حال حاضر با یکدیگر همخوانی ندارند. بهترین استراتژی، صبر کردن برای یک سیگنال واضح‌تر است."
         
     return analysis
 
-# --- کنترل‌کننده‌های ربات (اصلاح شده) ---
-
+# --- کنترل‌کننده‌های ربات ---
 def handle_chat(msg):
-    """پردازش پیام‌های متنی"""
     content_type, chat_type, chat_id = telepot.glance(msg)
     if content_type != 'text': return
-
     text = msg['text']
     
     if user_states.get(chat_id) == 'awaiting_symbol':
-        # پاک کردن پیام "لطفا نماد را وارد کنید"
+        # حذف پیام‌های قبلی برای تمیز ماندن چت
         if 'last_message_id' in user_states.get(chat_id, {}):
             try: bot.deleteMessage((chat_id, user_states[chat_id]['last_message_id']))
             except: pass
-        # پاک کردن پیامی که کاربر فرستاده (نام نماد)
         try: bot.deleteMessage((chat_id, msg['message_id']))
         except: pass
         
-        processing_message = bot.sendMessage(chat_id, f"در حال پردازش نماد {text.upper()}...")
+        processing_message = bot.sendMessage(chat_id, f"در حال پردازش نماد {text.upper()}... لطفاً صبر کنید.")
         handle_symbol_input(chat_id, text, processing_message['message_id'])
         return
         
@@ -155,7 +184,6 @@ def handle_chat(msg):
                         reply_markup=get_main_menu_keyboard())
 
 def handle_callback_query(msg):
-    """پردازش کلیک روی دکمه‌ها"""
     query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
     chat_id = from_id
     bot.answerCallbackQuery(query_id)
@@ -170,13 +198,14 @@ def handle_callback_query(msg):
                                        reply_markup=get_back_to_main_menu_keyboard())
         user_states[chat_id] = {'state': 'awaiting_symbol', 'last_message_id': sent_msg['message_id']}
 
-
 def handle_symbol_input(chat_id, text, processing_message_id):
-    """پردازش نماد ورودی کاربر"""
-    symbol = text.strip().upper()
+    symbol = text.strip().replace('/', '').replace('-', '').upper() # تمیز کردن ورودی کاربر
     chart_buffer, analysis_text = get_comprehensive_analysis(symbol)
     
-    bot.deleteMessage((chat_id, processing_message_id))
+    try:
+        bot.deleteMessage((chat_id, processing_message_id))
+    except:
+        pass # اگر پیام قبلا حذف شده باشد
     
     if chart_buffer and analysis_text:
         bot.sendPhoto(chat_id, chart_buffer, caption=analysis_text, parse_mode='Markdown')
