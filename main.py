@@ -32,7 +32,8 @@ BINANCE_API_SECRET = os.getenv('BINANCE_API_SECRET', '')
 
 # --- کلاینت‌ها و سرویس‌ها ---
 app = FastAPI()
-client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+# اضافه کردن tld='com' برای جلوگیری از مشکلات موقعیت مکانی
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET, tld='com')
 engine = create_engine(DATABASE_URL) if DATABASE_URL else None
 bot = telepot.Bot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 user_states = {}
