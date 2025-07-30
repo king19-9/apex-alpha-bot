@@ -1,23 +1,15 @@
-# requirements.txt (نسخه نهایی با aiogram)
-
 # Telegram Bot Library
-aiogram==2.25.1
+telepot
 
-# Database and Data Analysis
-psycopg2-binary
-pandas
-SQLAlchemy
-ta
-
-# Binance API
-python-binance
-
-# Charting
-matplotlib
-
-# Web Server
+# Web Server for Deployment
 fastapi
 uvicorn
 
-# Other
+# Libraries for Analysis (to be used later)
+pandas
+sqlalchemy
+psycopg2-binary
+python-binance
+ta
+matplotlib
 requests

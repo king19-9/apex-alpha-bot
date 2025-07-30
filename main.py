@@ -1,109 +1,155 @@
-# main.py (نسخه نهایی با اصلاح SyntaxError در aiogram)
+# main.py (نسخه نهایی با ساختار منوی پیشرفته و Telepot)
 
 import os
 import logging
-import asyncio
-import pandas as pd
-from sqlalchemy import create_engine, text
-import io
-
-# --- کتابخانه‌های مورد نیاز ---
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.utils.exceptions import BotBlocked
-
+import time
+import telepot
+from telepot.loop import MessageLoop
+from telepot.namedtuple import InlineKeyboardMarkup, InlineKeyboardButton
 from fastapi import FastAPI
+import uvicorn
+import threading
 
 # --- تنظیمات اولیه ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- متغیرهای محیطی ---
-API_TOKEN = os.getenv('TELEGRAM_TOKEN')
-DATABASE_URL = os.getenv('DATABASE_URL')
-WEBHOOK_HOST = os.getenv('RAILWAY_STATIC_URL')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# --- راه‌اندازی ربات و FastAPI ---
-if not API_TOKEN:
-    logging.fatal("TELEGRAM_TOKEN not found! The bot cannot start.")
-    exit()
-
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+# --- برنامه FastAPI (برای بیدار نگه داشتن در Railway) ---
 app = FastAPI()
-
-# --- متغیرهای سراسری ---
-WEBHOOK_PATH = f'/webhook/{API_TOKEN}'
-WEBHOOK_URL = f'https://{WEBHOOK_HOST}{WEBHOOK_PATH}' if WEBHOOK_HOST else None
-
-# --- منطق اصلی ربات با aiogram ---
-
-@dp.message_handler(commands=['start'])
-async def send_welcome(message: types.Message):
-    """پاسخ به دستور /start"""
-    logging.info(f"Received /start from user_id: {message.from_user.id}")
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    buttons = [
-        types.InlineKeyboardButton(text="📊 BTC", callback_data="analyze_BTCUSDT"),
-        types.InlineKeyboardButton(text="📈 ETH", callback_data="analyze_ETHUSDT"),
-    ]
-    keyboard.add(*buttons)
-    await message.answer("سلام! به ربات Apex خوش آمدید. یک گزینه را انتخاب کنید:", reply_markup=keyboard)
-
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('analyze_'))
-async def process_callback_analyze(callback_query: types.CallbackQuery):
-    """پردازش کلیک روی دکمه‌های تحلیل"""
-    symbol = callback_query.data.split('_')[1]
-    logging.info(f"Received analyze request for {symbol} from user_id: {callback_query.from_user.id}")
-    await bot.answer_callback_query(callback_query.id)
-    
-    try:
-        await bot.send_message(callback_query.from_user.id, f"در حال آماده‌سازی تحلیل برای {symbol}...")
-        
-        if not DATABASE_URL:
-            await bot.send_message(callback_query.from_user.id, "خطا: سرویس دیتابیس در دسترس نیست.")
-            return
-
-        # در اینجا باید منطق تحلیل و ارسال چارت را اضافه کنیم
-        # برای تست اولیه، فقط یک پیام موفقیت‌آمیز می‌فرستیم
-        await bot.send_message(callback_query.from_user.id, f"تحلیل برای {symbol} با موفقیت انجام شد (این یک پیام تستی است).")
-
-    except Exception as e:
-        logging.error(f"Error during analysis for {symbol}: {e}")
-        try:
-            await bot.send_message(callback_query.from_user.id, "خطا در پردازش تحلیل.")
-        except BotBlocked:
-            logging.warning(f"Bot was blocked by user {callback_query.from_user.id}")
-
-# --- مدیریت وب‌هوک و راه‌اندازی ---
-
-@app.on_event("startup")
-async def on_startup():
-    """این تابع در هنگام راه‌اندازی FastAPI اجرا می‌شود."""
-    if WEBHOOK_URL:
-        logging.info(f"Setting webhook to: {WEBHOOK_URL}")
-        current_webhook = await bot.get_webhook_info()
-        if current_webhook.url != WEBHOOK_URL:
-            await bot.set_webhook(WEBHOOK_URL)
-    else:
-        logging.warning("RAILWAY_STATIC_URL not found, cannot set webhook.")
-
-@app.post(WEBHOOK_PATH)
-async def bot_webhook(update: dict):
-    """دریافت آپدیت‌ها از تلگرام"""
-    telegram_update = types.Update(**update)
-    Dispatcher.set_current(dp)
-    Bot.set_current(bot)
-    try:
-        await dp.process_update(telegram_update)
-    except Exception as e:
-        logging.error(f"Error processing update: {e}")
-    return {'ok': True}
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    """این تابع در هنگام خاموش شدن FastAPI اجرا می‌شود."""
-    logging.info("Shutting down webhook...")
-    await bot.delete_webhook()
-
 @app.get("/")
 def read_root():
-    return {"status": "Apex Bot is running with aiogram!"}
+    return {"status": "Apex Advanced Bot is running!"}
+
+# --- مدیریت وضعیت کاربر ---
+user_states = {} # دیکشنری برای ذخیره وضعیت هر کاربر. مثلا: {chat_id: 'awaiting_symbol'}
+
+# --- توابع سازنده کیبوردها (برای تمیز بودن کد) ---
+
+def get_main_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📊 تحلیل تکنیکال', callback_data='menu_tech_analysis')],
+        [InlineKeyboardButton(text='📰 اخبار و احساسات', callback_data='menu_news')],
+        [InlineKeyboardButton(text='🐳 رصد نهنگ‌ها', callback_data='menu_whales')],
+        [InlineKeyboardButton(text='🧠 سیگنال‌های AI', callback_data='menu_ai')]
+    ])
+
+def get_symbol_analysis_keyboard(symbol):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📈 نمایش چارت', callback_data=f'action_chart_{symbol}')],
+        [InlineKeyboardButton(text='📉 اندیکاتورها', callback_data=f'action_indicators_{symbol}')],
+        [InlineKeyboardButton(text='🗞 اخبار مرتبط', callback_data=f'action_news_{symbol}')],
+        [InlineKeyboardButton(text='🔙 بازگشت (ورود نماد جدید)', callback_data='menu_tech_analysis')]
+    ])
+
+def get_back_to_main_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🔙 بازگشت به منوی اصلی', callback_data='main_menu')]
+    ])
+
+# --- منطق اصلی ربات ---
+
+def handle(msg):
+    """پردازش تمام پیام‌های ورودی (متنی و کلیک دکمه‌ها)"""
+    content_type, chat_type, chat_id = telepot.glance(msg)
+    
+    # اگر پیام از نوع کلیک روی دکمه باشد
+    if content_type == 'callback_query':
+        query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
+        chat_id = from_id # برای کلیک‌ها، chat_id همان from_id است
+        bot.answerCallbackQuery(query_id)
+        handle_callback_query(chat_id, query_data)
+        return
+
+    # اگر پیام از نوع متنی باشد
+    if content_type == 'text':
+        text = msg['text']
+        
+        # اگر کاربر در حال وارد کردن نماد است
+        if user_states.get(chat_id) == 'awaiting_symbol':
+            handle_symbol_input(chat_id, text)
+            return
+            
+        # اگر دستور /start است
+        if text == '/start':
+            user_states[chat_id] = 'main_menu' # کاربر را به منوی اصلی برمی‌گردانیم
+            bot.sendMessage(chat_id, 'به ربات هوشمند Apex خوش آمدید. چه بخشی را می‌خواهید بررسی کنید؟',
+                            reply_markup=get_main_menu_keyboard())
+
+def handle_callback_query(chat_id, query_data):
+    """پردازش منطق مربوط به کلیک روی دکمه‌ها"""
+    
+    # --- مدیریت منوی اصلی ---
+    if query_data == 'main_menu':
+        user_states[chat_id] = 'main_menu'
+        bot.sendMessage(chat_id, 'منوی اصلی:', reply_markup=get_main_menu_keyboard())
+
+    elif query_data == 'menu_tech_analysis':
+        user_states[chat_id] = 'awaiting_symbol' # ربات را در حالت انتظار برای دریافت نماد قرار می‌دهیم
+        bot.sendMessage(chat_id, 'لطفاً نماد ارز مورد نظر خود را با فرمت صحیح وارد کنید (مثلاً: BTCUSDT).',
+                        reply_markup=get_back_to_main_menu_keyboard())
+
+    elif query_data == 'menu_whales':
+        user_states[chat_id] = 'whales_menu'
+        # این بخش فعلاً نمایشی است
+        message = ("🐳 **بخش رصد نهنگ‌ها (نسخه آزمایشی)**\n\n"
+                   "این بخش در آینده نزدیک فعال خواهد شد و شامل موارد زیر خواهد بود:\n"
+                   "- **رادار آلت‌کوین‌ها:** شناسایی ارزهای نوپایی که توسط نهنگ‌های هوشمند خریداری می‌شوند.\n"
+                   "- **تراکنش‌های بزرگ:** اطلاع‌رسانی آنی از جابجایی‌های عظیم در شبکه.")
+        bot.sendMessage(chat_id, message, reply_markup=get_back_to_main_menu_keyboard())
+    
+    # --- مدیریت اقدامات مربوط به یک نماد خاص ---
+    elif query_data.startswith('action_'):
+        parts = query_data.split('_')
+        action = parts[1]
+        symbol = parts[2]
+        
+        if action == 'chart':
+            bot.sendMessage(chat_id, f'در حال آماده‌سازی چارت برای {symbol}...')
+            # TODO: اینجا کد رسم نمودار قرار می‌گیرد
+        elif action == 'indicators':
+            bot.sendMessage(chat_id, f'در حال واکشی اندیکاتورها برای {symbol}...')
+            # TODO: اینجا کد واکشی اندیکاتورها از دیتابیس قرار می‌گیرد
+        elif action == 'news':
+            bot.sendMessage(chat_id, f'در حال جستجوی اخبار برای {symbol}...')
+            # TODO: اینجا کد جستجوی اخبار از NewsAPI قرار می‌گیرد
+
+
+def handle_symbol_input(chat_id, text):
+    """پردازش متنی که کاربر به عنوان نماد وارد کرده"""
+    symbol = text.strip().upper() # حذف فاصله‌های اضافی و تبدیل به حروف بزرگ
+    
+    # TODO: در اینجا باید یک تابع برای اعتبارسنجی نماد از طریق API بایننس اضافه کنیم
+    # فعلاً فرض می‌کنیم هر ورودی معتبر است
+    is_valid = True 
+    
+    if is_valid:
+        user_states[chat_id] = f'symbol_menu_{symbol}' # وضعیت کاربر را به منوی این نماد تغییر می‌دهیم
+        bot.sendMessage(chat_id, f'نماد {symbol} تایید شد. کدام تحلیل را نیاز دارید؟',
+                        reply_markup=get_symbol_analysis_keyboard(symbol))
+    else:
+        bot.sendMessage(chat_id, 'خطا: نماد وارد شده معتبر نیست. لطفاً دوباره تلاش کنید.')
+
+
+# --- راه‌اندازی ربات و وب‌سرور ---
+if not TELEGRAM_TOKEN:
+    logging.fatal("TELEGRAM_TOKEN not found!")
+    exit()
+
+bot = telepot.Bot(TELEGRAM_TOKEN)
+MessageLoop(bot, handle).run_as_thread()
+logging.info('Telepot bot is listening...')
+
+def run_web_server():
+    port = int(os.getenv('PORT', 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+# اگر در حال اجرا روی Railway هستیم، وب‌سرور را اجرا کن
+if os.getenv('RAILWAY_ENVIRONMENT'):
+    threading.Thread(target=run_web_server, daemon=True).start()
+
+# نگه داشتن برنامه اصلی در حال اجرا
+logging.info("Bot is running. Press Ctrl+C to exit.")
+while 1:
+    time.sleep(10)
