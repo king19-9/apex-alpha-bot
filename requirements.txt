@@ -1,19 +1,11 @@
-# requirements.txt (نسخه نهایی با KuCoin و ccxt)
-
-# Telegram Bot Library
 telepot
-
-# Web Server for Deployment
 fastapi
 uvicorn
-
-# Libraries for Analysis
 pandas
 sqlalchemy
 psycopg2-binary
+requests
+ccxt
 ta
 matplotlib
-requests
-
-# Crypto Exchange Library (NEW)
-ccxt
+mplfinance
