@@ -2,9 +2,9 @@ telepot
 fastapi
 uvicorn
 pandas
-sqlalchemy
-psycopg2-binary
 requests
 ccxt
 ta
 tradingview-ta
+investpy
+scikit-learn
