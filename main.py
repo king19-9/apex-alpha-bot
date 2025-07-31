@@ -9,7 +9,6 @@ from fastapi import FastAPI
 import uvicorn
 import threading
 import requests
-import ccxt
 from tradingview_ta import TA_Handler, Interval
 import investpy
 from datetime import datetime
@@ -23,12 +22,11 @@ ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
 
 # --- کلاینت‌ها و سرویس‌ها ---
 app = FastAPI()
-exchange = ccxt.kucoin()
 bot = telepot.Bot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 user_states = {}
 active_trades = {}
 signal_hunt_subscribers = set()
-anomaly_signals_cache = []
+silver_signals_cache = []
 trade_journal = {}
 backtest_results_cache = {}
 
@@ -40,7 +38,7 @@ def get_main_menu_keyboard(chat_id):
         [InlineKeyboardButton(text='🐳 رصد نهنگ‌های USDT', callback_data='menu_whale_watch')],
     ]
     if chat_id in signal_hunt_subscribers:
-        buttons.append([InlineKeyboardButton(text='🔕 غیرفعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
+        buttons.append([InlineKeyboardButton(text='𔕕 غیرفعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
     else:
         buttons.append([InlineKeyboardButton(text='🔔 فعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
     if chat_id in active_trades:
@@ -65,8 +63,8 @@ def get_interactive_report_keyboard(symbol):
 def run_backtest_simulation(symbol):
     if symbol in backtest_results_cache: return backtest_results_cache[symbol]
     try:
-        kucoin_symbol = f"{symbol.upper()}/USDT"
-        df = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, '4h', limit=500), columns=['ts','o','h','l','c','v'])
+        kucoin_exchange = ccxt.kucoin()
+        df = pd.DataFrame(kucoin_exchange.fetch_ohlcv(f"{symbol}/USDT", '4h', limit=500), columns=['ts','o','h','l','c','v'])
         if len(df) < 100: return {"name": "N/A", "details": {"win_rate": 0, "description": "داده کافی برای بک‌تست نیست."}}
         
         df['ema_fast'] = ta.trend.ema_indicator(df['c'], 20)
@@ -134,8 +132,22 @@ def hunt_signals():
     while True:
         logging.info("SIGNAL_HUNTER: Starting new HYBRID market scan...")
         try:
-            # ... (منطق کامل شکار سیگنال از پاسخ‌های قبلی) ...
-            pass
+            all_markets = exchange_ccxt.load_markets()
+            usdt_pairs = {s: m for s, m in all_markets.items() if s.endswith('/USDT')}
+            tickers = exchange_ccxt.fetch_tickers(list(usdt_pairs.keys()))
+            temp_anomaly_signals = []
+            for symbol, ticker in tickers.items():
+                volume_usd = ticker.get('quoteVolume', 0)
+                if volume_usd > 1_000_000:
+                    df_1h = pd.DataFrame(exchange_ccxt.fetch_ohlcv(symbol, '1h', limit=21), columns=['ts','o','h','l','c','v'])
+                    if len(df_1h) < 21: continue
+                    avg_volume = df_1h['v'].iloc[:-1].mean()
+                    last_volume = df_1h['v'].iloc[-1]
+                    if last_volume > avg_volume * 5:
+                        temp_anomaly_signals.append({'symbol': symbol.replace('/USDT',''), 'reason': f"افزایش ناگهانی حجم ({last_volume/avg_volume:.1f}x)"})
+                time.sleep(1)
+            anomaly_signals_cache = temp_anomaly_signals
+            logging.info(f"ANOMALY_SCAN: Found {len(anomaly_signals_cache)} volume anomalies.")
         except Exception as e:
             logging.error(f"Error in anomaly hunter: {e}")
         time.sleep(60 * 60)
@@ -232,7 +244,6 @@ def handle_callback_query(msg):
         elif section == 'ai_proposal':
             report_section += "منطق پیشنهاد AI در اینجا نمایش داده می‌شود..."
         bot.sendMessage(chat_id, report_section, parse_mode='Markdown')
-    # ... (منطق کامل سایر دکمه‌ها از پاسخ‌های قبلی) ...
 
 # --- راه‌اندازی ربات ---
 def run_web_server():
@@ -244,7 +255,6 @@ if __name__ == '__main__':
         logging.fatal("TELEGRAM_TOKEN not found!")
     else:
         threading.Thread(target=hunt_signals, daemon=True, name="SignalHunterThread").start()
-        # threading.Thread(target=trade_monitor_loop, daemon=True).start()
         
         MessageLoop(bot, {'chat': handle_chat,
                           'callback_query': handle_callback_query}).run_as_thread()
