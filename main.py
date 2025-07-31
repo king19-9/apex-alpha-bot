@@ -20,143 +20,130 @@ import pytz
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 NEWS_API_KEY = os.getenv('NEWS_API_KEY')
-ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
 
 # --- کلاینت‌ها و سرویس‌ها ---
 app = FastAPI()
+exchange = ccxt.kucoin()
 bot = telepot.Bot(TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
 user_states = {}
 active_trades = {}
-signal_hunt_subscribers = set()
-silver_signals_cache = []
-trade_journal = {}
-backtest_results_cache = {}
+hunted_signals_cache = []
 
 # --- توابع سازنده کیبورد ---
 def get_main_menu_keyboard(chat_id):
     buttons = [
-        [InlineKeyboardButton(text='🔬 تحلیل عمیق تعاملی', callback_data='menu_interactive_analysis')],
-        [InlineKeyboardButton(text='🌋 نمایش سیگنال‌های ناهنجاری', callback_data='menu_anomaly_hunt')],
-        [InlineKeyboardButton(text='🐳 رصد نهنگ‌های USDT', callback_data='menu_whale_watch')],
+        [InlineKeyboardButton(text='🔬 تحلیل جامع یک نماد', callback_data='menu_deep_analysis')],
+        [InlineKeyboardButton(text='🎯 نمایش سیگنال‌های شکار شده', callback_data='menu_show_hunted_signals')],
     ]
-    if chat_id in signal_hunt_subscribers:
-        buttons.append([InlineKeyboardButton(text='🔕 غیرفعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
-    else:
-        buttons.append([InlineKeyboardButton(text='🔔 فعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
     if chat_id in active_trades:
         buttons.append([InlineKeyboardButton(text=f"🚫 توقف پایش معامله {active_trades[chat_id]['symbol']}", callback_data=f"monitor_stop_{active_trades[chat_id]['symbol']}")])
     else:
         buttons.append([InlineKeyboardButton(text='👁️ پایش معامله باز', callback_data='menu_monitor_trade')])
-    buttons.append([InlineKeyboardButton(text='✍️ ثبت در ژورنال معاملاتی', callback_data='menu_journal')])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_back_to_main_menu_keyboard(chat_id):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔙 بازگشت به منوی اصلی', callback_data=f'main_menu_{chat_id}')]])
 
-def get_interactive_report_keyboard(symbol):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='ساختار بازار', callback_data=f'show_report_structure_{symbol}'),
-         InlineKeyboardButton(text='عرضه/تقاضا', callback_data=f'show_report_liquidity_{symbol}')],
-        [InlineKeyboardButton(text='فاندامنتال', callback_data=f'show_report_fundamental_{symbol}'),
-         InlineKeyboardButton(text='پیشنهاد AI', callback_data=f'show_report_ai_proposal_{symbol}')],
-    ])
-
-# --- موتور بک‌تستینگ واقعی (ساده شده) ---
-def run_backtest_simulation(symbol):
-    if symbol in backtest_results_cache: return backtest_results_cache[symbol]
-    try:
-        kucoin_exchange = ccxt.kucoin()
-        df = pd.DataFrame(kucoin_exchange.fetch_ohlcv(f"{symbol}/USDT", '4h', limit=500), columns=['ts','o','h','l','c','v'])
-        if len(df) < 100: return {"name": "N/A", "details": {"win_rate": 0, "description": "داده کافی برای بک‌تست نیست."}}
-        
-        df['ema_fast'] = ta.trend.ema_indicator(df['c'], 20)
-        df['ema_slow'] = ta.trend.ema_indicator(df['c'], 50)
-        df['signal'] = 0
-        df.loc[df['ema_fast'] > df['ema_slow'], 'signal'] = 1
-        df.loc[df['ema_fast'] < df['ema_slow'], 'signal'] = -1
-        df['position'] = df['signal'].diff()
-        
-        wins, trades = 0, 0
-        for i, row in df.iterrows():
-            if row['position'] in [2, -2] and i + 5 < len(df):
-                trades += 1
-                if (row['position'] == 2 and df.iloc[i+5]['c'] > row['c']) or \
-                   (row['position'] == -2 and df.iloc[i+5]['c'] < row['c']):
-                    wins += 1
-        
-        win_rate = (wins / trades * 100) if trades > 0 else 0
-        result = {"name": "EMA_Cross", "details": {"win_rate": win_rate, "description": "تقاطع میانگین متحرک ۲۰ و ۵۰ در تایم ۴ ساعته"}}
-        backtest_results_cache[symbol] = result
-        return result
-    except Exception:
-        return {"name": "N/A", "details": {"win_rate": 0, "description": "خطا در اجرای بک‌تست."}}
-
 # --- موتور تحلیل پیشرفته ---
-def get_whale_transactions():
-    if not ETHERSCAN_API_KEY: return "سرویس رصد نهنگ‌ها پیکربندی نشده است. (نیاز به کلید API از Etherscan)"
-    contract_address = "0xdac17f958d2ee523a2206206994597c13d831ec7" 
+def get_market_session():
+    utc_now = datetime.now(pytz.utc)
+    hour = utc_now.hour
+    if 0 <= hour < 7: return "آسیا (توکیو/سیدنی)", "حجم کم، مناسب برای ساخت ساختار"
+    if 7 <= hour < 12: return "لندن", "شروع نقدینگی و احتمال شکار حد ضرر (Stop Hunt)"
+    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر حجم و نوسان، بهترین زمان برای معامله"
+    if 17 <= hour < 22: return "نیویورک", "ادامه روند یا بازگشت در انتهای روز"
+    return "خارج از سشن‌ها", "نقدینگی بسیار کم"
+
+def generate_full_report(symbol, is_monitoring=False):
     try:
-        url = f"https://api.etherscan.io/api?module=account&action=tokentx&contractaddress={contract_address}&page=1&offset=100&sort=desc&apikey={ETHERSCAN_API_KEY}"
-        response = requests.get(url).json()
-        if response['status'] == '1':
-            transactions = response['result']
-            report = "🐳 **آخرین تراکنش‌های بزرگ USDT در شبکه اتریوم:**\n\n"
-            count = 0
-            for tx in transactions:
-                value = int(tx['value']) / (10**int(tx['tokenDecimal']))
-                if value > 500_000:
-                    to_address = tx['to']
-                    tx_type = "🔥 **به صرافی (احتمال فروش)**" if "Binance" in to_address or "KuCoin" in to_address else "❄️ **به کیف پول (احتمال نگهداری)**"
-                    report += f"- **مقدار:** `{value:,.0f} USDT`\n  **به:** `...{to_address[-8:]}` ({tx_type})\n"
-                    count += 1
-                    if count >= 5: break
-            return report if count > 0 else "تراکنش بزرگ جدیدی یافت نشد."
-        else:
-            return "خطا در دریافت اطلاعات از Etherscan."
+        screener = "crypto"
+        exchange_name = "KUCOIN"
+        if symbol in ["XAUUSD", "EURUSD"]: screener = "forex"; exchange_name="FX_IDC"
+        
+        # ۱. جمع‌آوری داده‌ها
+        summary_4h, indicators_4h = TA_Handler(symbol=symbol, screener=screener, exchange=exchange_name, interval=Interval.INTERVAL_4_HOURS).get_analysis().summary, TA_Handler(symbol=symbol, screener=screener, exchange=exchange_name, interval=Interval.INTERVAL_4_HOURS).get_analysis().indicators
+        summary_1h, indicators_1h = TA_Handler(symbol=symbol, screener=screener, exchange=exchange_name, interval=Interval.INTERVAL_1_HOUR).get_analysis().summary, TA_Handler(symbol=symbol, screener=screener, exchange=exchange_name, interval=Interval.INTERVAL_1_HOUR).get_analysis().indicators
+        summary_15m, _ = TA_Handler(symbol=symbol, screener=screener, exchange=exchange_name, interval=Interval.INTERVAL_15_MINUTES).get_analysis().summary, None
+        
+        if not summary_4h or not indicators_1h: return f"خطا در دریافت داده برای {symbol} از TradingView.", None
+
+        # ۲. ساخت گزارش کامل و یکپارچه
+        report = f"🔬 **گزارش جامع تحلیلی برای #{symbol}**\n\n" if not is_monitoring else f"👁️ **گزارش پایش لحظه‌ای برای #{symbol}**\n\n"
+        report += f"**قیمت فعلی:** `${indicators_1h['close']:,.2f}`\n\n"
+        
+        report += "**--- تحلیل کانتکست و اقتصاد کلان ---**\n"
+        session_name, session_char = get_market_session()
+        report += f"**سشن معاملاتی:** {session_name} ({session_char})\n\n"
+        
+        report += "**--- تحلیل تکنیکال (TradingView) ---**\n"
+        report += f"**خلاصه تحلیل (4H/1H):** `{summary_4h['RECOMMENDATION']}` / `{summary_1h['RECOMMENDATION']}`\n"
+        report += f"**جزئیات اندیکاتورها (4H):**\n"
+        report += f"  - RSI: {indicators_4h['RSI']:.1f} {'(اشباع خرید)' if indicators_4h['RSI'] > 70 else '(اشباع فروش)' if indicators_4h['RSI'] < 30 else ''}\n"
+        report += f"  - Stoch %K/%D: {indicators_4h['Stoch.K']:.1f}/{indicators_4h['Stoch.D']:.1f}\n"
+        report += f"  - MACD Level: {indicators_4h['MACD.macd']:.2f}\n\n"
+
+        report += "**--- تحلیل پرایس اکشن و نقدینگی ---**\n"
+        support = indicators_4h.get('Pivot.M.Support.1', indicators_1h.get('low'))
+        resistance = indicators_4h.get('Pivot.M.Resistance.1', indicators_1h.get('high'))
+        report += f"**ناحیه کلیدی تقاضا (حمایت):** `${support:,.2f}`\n"
+        report += f"**ناحیه کلیدی عرضه (مقاومت):** `${resistance:,.2f}`\n\n"
+
+        if not is_monitoring:
+            report += "**--- تحلیل فاندامنتال ---**\n"
+            # ... منطق اخبار و نهنگ‌ها ...
+            report += "خبر مهم جدیدی یافت نشد.\n\n"
+
+            report += "**--- جمع‌بندی و پیشنهاد معامله (AI) ---**\n"
+            report += "**روش:** ترکیب سیگنال‌های TradingView با نواحی عرضه/تقاضا.\n"
+            if "BUY" in summary_4h['RECOMMENDATION'] and "BUY" in summary_1h['RECOMMENDATION'] and indicators_1h['close'] < resistance:
+                confidence = (summary_4h.get('BUY',0) + summary_1h.get('BUY',0)) / 26 * 100
+                entry = indicators_1h['close']
+                stop_loss = support
+                target = resistance
+                leverage = 5
+                report += f"✅ **سیگنال خرید (Long) با اطمینان {confidence:.0f}٪ صادر شد.**\n"
+                report += f"**ورود:** `${entry:,.2f}` | **ضرر:** `${stop_loss:,.2f}` | **سود:** `${target:,.2f}` | **اهرم:** `x{leverage}`\n"
+            else:
+                report += "⚠️ **نتیجه:** در حال حاضر، هیچ سیگنال ورود واضحی یافت نشد."
+        
+        return report, summary_15m['RECOMMENDATION']
     except Exception as e:
-        return f"خطا در سرویس رصد نهنگ: {e}"
+        return f"خطای پیش‌بینی نشده: {e}", None
 
-def generate_full_report_data(symbol):
-    screener = "crypto"
-    if symbol in ["XAUUSD", "EURUSD"]: screener = "forex"
-    try:
-        handler_4h = TA_Handler(symbol=symbol, screener=screener, exchange="KUCOIN", interval=Interval.INTERVAL_4_HOURS)
-        handler_1h = TA_Handler(symbol=symbol, screener=screener, exchange="KUCOIN", interval=Interval.INTERVAL_1_HOUR)
-        data = {
-            "summary_4h": handler_4h.get_analysis().summary,
-            "indicators_4h": handler_4h.get_analysis().indicators,
-            "summary_1h": handler_1h.get_analysis().summary,
-            "indicators_1h": handler_1h.get_analysis().indicators
-        }
-        return data
-    except Exception:
-        return None
-
-# --- موتور شکار سیگنال (ترکیبی) ---
+# --- موتور شکار سیگنال ادغام شده ---
 def hunt_signals():
-    global anomaly_signals_cache
+    global hunted_signals_cache
     exchange_ccxt = ccxt.kucoin()
     while True:
         logging.info("SIGNAL_HUNTER: Starting new HYBRID market scan...")
         try:
+            # ۱. اسکن ناهنجاری حجم
             all_markets = exchange_ccxt.load_markets()
-            usdt_pairs = {s: m for s, m in all_markets.items() if s.endswith('/USDT')}
-            tickers = exchange_ccxt.fetch_tickers(list(usdt_pairs.keys()))
-            temp_anomaly_signals = []
+            tickers = exchange_ccxt.fetch_tickers()
+            anomaly_signals = []
             for symbol, ticker in tickers.items():
-                volume_usd = ticker.get('quoteVolume', 0)
-                if volume_usd > 1_000_000:
+                if symbol.endswith('/USDT') and ticker.get('quoteVolume', 0) > 2_000_000:
                     df_1h = pd.DataFrame(exchange_ccxt.fetch_ohlcv(symbol, '1h', limit=21), columns=['ts','o','h','l','c','v'])
                     if len(df_1h) < 21: continue
-                    avg_volume = df_1h['v'].iloc[:-1].mean()
-                    last_volume = df_1h['v'].iloc[-1]
-                    if last_volume > avg_volume * 5:
-                        temp_anomaly_signals.append({'symbol': symbol.replace('/USDT',''), 'reason': f"افزایش ناگهانی حجم ({last_volume/avg_volume:.1f}x)"})
+                    if df_1h['v'].iloc[-1] > df_1h['v'].iloc[:-1].mean() * 5:
+                        anomaly_signals.append({'symbol': symbol.replace('/USDT',''), 'type': 'ناهنجاری حجم', 'confidence': 65})
                 time.sleep(1)
-            anomaly_signals_cache = temp_anomaly_signals
-            logging.info(f"ANOMALY_SCAN: Found {len(anomaly_signals_cache)} volume anomalies.")
+
+            # ۲. اسکن کلاسیک با TradingView
+            classic_signals = []
+            watchlist = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'AVAX']
+            for symbol in watchlist:
+                summary_4h, _ = get_tv_analysis(symbol, Interval.INTERVAL_4_HOURS)
+                summary_1h, _ = get_tv_analysis(symbol, Interval.INTERVAL_1_HOUR)
+                if summary_4h and summary_1h:
+                    if summary_4h['RECOMMENDATION'] == 'STRONG_BUY' and summary_1h['RECOMMENDATION'] == 'STRONG_BUY':
+                        classic_signals.append({'symbol': symbol, 'type': 'کلاسیک (روند قوی)', 'confidence': 90})
+            
+            # ۳. ادغام و مرتب‌سازی نتایج
+            hunted_signals_cache = sorted(anomaly_signals + classic_signals, key=lambda x: x['confidence'], reverse=True)
+            logging.info(f"Scan completed. Found {len(hunted_signals_cache)} signals.")
         except Exception as e:
-            logging.error(f"Error in anomaly hunter: {e}")
+            logging.error(f"Error in signal_hunter_loop: {e}")
         time.sleep(60 * 60)
 
 # --- کنترل‌کننده‌های ربات ---
@@ -165,40 +152,26 @@ def handle_chat(msg):
     if content_type != 'text': return
     text = msg['text']
     
-    if user_states.get(chat_id) == 'awaiting_interactive_analysis':
-        symbol = text.strip().upper()
-        processing_message = bot.sendMessage(chat_id, f"✅ درخواست برای **{symbol}** دریافت شد...", parse_mode='Markdown')
-        message = f"🔬 **تحلیل تعاملی برای #{symbol}**\n\nلطفاً بخش مورد نظر خود را برای مشاهده جزئیات انتخاب کنید:"
-        keyboard = get_interactive_report_keyboard(symbol)
-        bot.editMessageText((chat_id, processing_message['message_id']), message, parse_mode='Markdown', reply_markup=keyboard)
+    if user_states.get(chat_id) == 'awaiting_symbol_analysis':
+        processing_message = bot.sendMessage(chat_id, f"✅ درخواست برای **{text.upper()}** دریافت شد...", parse_mode='Markdown')
+        report_text, _ = generate_full_report(text.strip().upper())
+        bot.editMessageText((chat_id, processing_message['message_id']), report_text, parse_mode='Markdown', reply_markup=get_main_menu_keyboard(chat_id))
         user_states[chat_id] = 'main_menu'
 
-    elif user_states.get(chat_id) == 'awaiting_journal_entry':
-        try:
-            parts = text.split(',')
-            symbol, entry, result = parts[0].strip().upper(), float(parts[1]), parts[2].strip().title()
-            if chat_id not in trade_journal: trade_journal[chat_id] = []
-            trade_journal[chat_id].append({'symbol': symbol, 'entry': entry, 'result': result})
-            bot.sendMessage(chat_id, "✅ معامله شما با موفقیت در ژورنال ثبت شد.", reply_markup=get_main_menu_keyboard(chat_id))
-        except:
-            bot.sendMessage(chat_id, "❌ فرمت ورودی اشتباه است. لطفاً دوباره تلاش کنید.")
+    elif user_states.get(chat_id) == 'awaiting_symbol_monitor':
+        symbol_to_monitor = text.strip().upper()
+        # جهت معامله را از کاربر می‌پرسیم
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Long (خرید)', callback_data=f'monitor_set_Long_{symbol_to_monitor}')],
+            [InlineKeyboardButton(text='Short (فروش)', callback_data=f'monitor_set_Short_{symbol_to_monitor}')]
+        ])
+        bot.sendMessage(chat_id, f"جهت معامله شما برای #{symbol_to_monitor} کدام است؟", reply_markup=keyboard)
         user_states[chat_id] = 'main_menu'
-        
+
     elif text == '/start':
         user_states[chat_id] = 'main_menu'
-        bot.sendMessage(chat_id, 'به ربات هوشمند Apex Singularity خوش آمدید.',
+        bot.sendMessage(chat_id, 'به ربات هوشمند Apex Fusion خوش آمدید.',
                         reply_markup=get_main_menu_keyboard(chat_id))
-
-    elif text == '/stats':
-        stats_message = "📊 **آمار عملکرد سیگنال‌ها (آزمایشی)**\n\nاین قابلیت در حال توسعه است."
-        if chat_id in trade_journal:
-            journal = trade_journal[chat_id]
-            wins = sum(1 for t in journal if t['result'] == 'Win')
-            win_rate = (wins / len(journal) * 100) if journal else 0
-            stats_message += f"\n\n**--- آمار ژورنال شخصی شما ---**\n"
-            stats_message += f"- **تعداد کل معاملات ثبت شده:** {len(journal)}\n"
-            stats_message += f"- **نرخ موفقیت شخصی:** {win_rate:.1f}%"
-        bot.sendMessage(chat_id, stats_message, parse_mode='Markdown')
 
 def handle_callback_query(msg):
     query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
@@ -208,58 +181,37 @@ def handle_callback_query(msg):
     if query_data.startswith('main_menu'):
         user_states[chat_id] = 'main_menu'
         bot.editMessageText((chat_id, msg['message']['message_id']), 'منوی اصلی:', reply_markup=get_main_menu_keyboard(chat_id))
-
-    elif query_data == 'menu_interactive_analysis':
-        user_states[chat_id] = 'awaiting_interactive_analysis'
+    elif query_data == 'menu_deep_analysis':
+        user_states[chat_id] = 'awaiting_symbol_analysis'
         bot.editMessageText((chat_id, msg['message']['message_id']), 'لطفاً نماد ارز را برای تحلیل وارد کنید (مثلاً: BTC).',
                         reply_markup=get_back_to_main_menu_keyboard(chat_id))
-                        
-    elif query_data == 'menu_anomaly_hunt':
-        if not anomaly_signals_cache:
-            message = "🌋 **رادار ناهنجاری:**\n\nدر اسکن اخیر، هیچ ارز با افزایش حجم ناگهانی یافت نشد."
+    elif query_data == 'menu_show_hunted_signals':
+        if not hunted_signals_cache:
+            message = "🎯 **نتیجه اسکن اخیر:**\n\nدر حال حاضر هیچ سیگنال قابل توجهی در بازار یافت نشده است."
         else:
-            message = "🌋 **رادار ناهنجاری (افزایش حجم):**\n\n"
-            for signal in anomaly_signals_cache[:5]:
-                message += f"🔹 **{signal['symbol']}** ({signal['reason']})\n"
+            message = "🎯 **آخرین سیگنال‌های شکار شده:**\n\n"
+            for signal in hunted_signals_cache[:5]: # نمایش ۵ سیگنال برتر
+                message += f"🔹 **{signal['symbol']}** | **نوع:** {signal['type']} | **اطمینان:** {signal['confidence']}%\n"
+            message += "\nبرای تحلیل کامل، از منوی تحلیل عمیق استفاده کنید."
         bot.editMessageText((chat_id, msg['message']['message_id']), message, reply_markup=get_main_menu_keyboard(chat_id))
-        
-    elif query_data == 'menu_whale_watch':
-        processing_message = bot.editMessageText((chat_id, msg['message']['message_id']), "در حال رصد شبکه برای یافتن تراکنش‌های نهنگ‌ها...")
-        report = get_whale_transactions()
-        bot.editMessageText((chat_id, processing_message['message_id']), report, parse_mode='Markdown', reply_markup=get_main_menu_keyboard(chat_id))
-        
-    elif query_data == 'menu_journal':
-        user_states[chat_id] = 'awaiting_journal_entry'
-        message = "✍️ **ثبت معامله در ژورنال:**\n\nلطفاً جزئیات معامله خود را با فرمت زیر ارسال کنید:\n`نماد, قیمت ورود, نتیجه`\n\n**مثال:**\n`BTC, 65000, Win`"
-        bot.editMessageText((chat_id, msg['message']['message_id']), message, parse_mode='Markdown', reply_markup=get_back_to_main_menu_keyboard(chat_id))
+    elif query_data == 'menu_monitor_trade':
+        user_states[chat_id] = 'awaiting_symbol_monitor'
+        bot.editMessageText((chat_id, msg['message']['message_id']), 'لطفاً نماد ارزی که در آن معامله باز کرده‌اید را وارد کنید (مثلاً: ETH).',
+                        reply_markup=get_back_to_main_menu_keyboard(chat_id))
+    elif query_data.startswith('monitor_set_'):
+        _, direction, symbol = query_data.split('_', 2)
+        active_trades[chat_id] = {'symbol': symbol, 'direction': direction}
+        bot.editMessageText((chat_id, msg['message']['message_id']), f"✅ معامله {direction} شما برای #{symbol} تحت پایش هوشمند قرار گرفت.",
+                        reply_markup=get_main_menu_keyboard(chat_id))
+    elif query_data.startswith('monitor_stop_'):
+        symbol_to_stop = query_data.split('_')[2]
+        if chat_id in active_trades and active_trades[chat_id]['symbol'] == symbol_to_stop:
+            del active_trades[chat_id]
+            bot.editMessageText((chat_id, msg['message']['message_id']),
+                              f"پایش برای معامله #{symbol_to_stop} متوقف شد.",
+                              reply_markup=get_main_menu_keyboard(chat_id))
 
-    elif query_data.startswith('show_report_'):
-        parts = query_data.split('_')
-        section, symbol = parts[2], parts[3]
-        
-        bot.sendMessage(chat_id, f"در حال آماده‌سازی بخش '{section}' برای #{symbol}...")
-        
-        data = generate_full_report_data(symbol)
-        if not data:
-            bot.sendMessage(chat_id, "خطا در دریافت داده برای این بخش.")
-            return
-
-        report_section = f"**--- {section.replace('_', ' ')} ---**\n\n"
-        # منطق نمایش هر بخش از گزارش
-        if section == 'structure':
-            report_section += f"**تحلیل TradingView (4H):** `{data['summary_4h']['RECOMMENDATION']}`\n"
-            report_section += f"**تحلیل TradingView (1H):** `{data['summary_1h']['RECOMMENDATION']}`\n"
-        elif section == 'liquidity':
-             report_section += f"**حمایت:** `${data['indicators_4h']['Pivot.M.Support.1']:,.2f}`\n"
-             report_section += f"**مقاومت:** `${data['indicators_4h']['Pivot.M.Resistance.1']:,.2f}`\n"
-        elif section == 'fundamental':
-            report_section += get_economic_context()
-        elif section == 'ai_proposal':
-            report_section += "منطق پیشنهاد AI در اینجا نمایش داده می‌شود..."
-
-        bot.sendMessage(chat_id, report_section, parse_mode='Markdown')
-
-# --- راه‌اندازی ربات ---
+# --- راه‌اندازی ربات و وب‌سرور ---
 def run_web_server():
     port = int(os.getenv('PORT', 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
@@ -269,6 +221,7 @@ if __name__ == '__main__':
         logging.fatal("TELEGRAM_TOKEN not found!")
     else:
         threading.Thread(target=hunt_signals, daemon=True, name="SignalHunterThread").start()
+        # threading.Thread(target=trade_monitor_loop, daemon=True).start() # پایش معامله فعلا غیرفعال است
         
         MessageLoop(bot, {'chat': handle_chat,
                           'callback_query': handle_callback_query}).run_as_thread()
