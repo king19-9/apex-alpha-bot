@@ -7,5 +7,4 @@ psycopg2-binary
 requests
 ccxt
 ta
-matplotlib
-mplfinance
+tradingview-ta

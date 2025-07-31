@@ -27,18 +27,22 @@ user_states = {}
 active_trades = {}
 signal_hunt_subscribers = set()
 silver_signals_cache = []
-signal_history = [{'symbol': 'BTC', 'type': 'Long', 'result': 'Win'}, {'symbol': 'ETH', 'type': 'Long', 'result': 'Loss'}, {'symbol': 'SOL', 'type': 'Long', 'result': 'Win'}]
+signal_history = [
+    {'symbol': 'BTC', 'type': 'Golden', 'entry': 60000, 'target': 65000, 'stop': 59000, 'result': 'Win', 'timestamp': datetime(2025, 7, 10)},
+    {'symbol': 'ETH', 'type': 'Silver', 'entry': 4000, 'target': 4200, 'stop': 3950, 'result': 'Loss', 'timestamp': datetime(2025, 7, 12)},
+    {'symbol': 'SOL', 'type': 'Golden', 'entry': 150, 'target': 170, 'stop': 147, 'result': 'Win', 'timestamp': datetime(2025, 6, 20)}
+]
 
 # --- توابع سازنده کیبورد ---
 def get_main_menu_keyboard(chat_id):
     buttons = [
-        [InlineKeyboardButton(text='🔬 تحلیل عمیق یک ارز', callback_data='menu_deep_analysis')],
+        [InlineKeyboardButton(text='🔬 تحلیل عمیق یک نماد', callback_data='menu_deep_analysis')],
         [InlineKeyboardButton(text='🥈 نمایش سیگنال‌های نقره‌ای', callback_data='menu_show_silver_signals')],
     ]
     if chat_id in signal_hunt_subscribers:
-        buttons.append([InlineKeyboardButton(text='🔕 غیرفعال کردن نوتیفیکیشن سیگنال', callback_data='menu_toggle_signal_hunt')])
+        buttons.append([InlineKeyboardButton(text='🔕 غیرفعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
     else:
-        buttons.append([InlineKeyboardButton(text='🔔 فعال کردن نوتیفیکیشن سیگنال', callback_data='menu_toggle_signal_hunt')])
+        buttons.append([InlineKeyboardButton(text='🔔 فعال کردن نوتیفیکیشن طلایی', callback_data='menu_toggle_signal_hunt')])
     if chat_id in active_trades:
         buttons.append([InlineKeyboardButton(text=f"🚫 توقف پایش معامله {active_trades[chat_id]['symbol']}", callback_data=f"monitor_stop_{active_trades[chat_id]['symbol']}")])
     else:
@@ -52,11 +56,11 @@ def get_back_to_main_menu_keyboard(chat_id):
 def get_market_session():
     utc_now = datetime.now(pytz.utc)
     hour = utc_now.hour
-    if 0 <= hour < 7: return "آسیا (توکیو/سیدنی)", "نوسان کم و ساخت ساختار"
-    if 7 <= hour < 12: return "لندن", "شروع نقدینگی و احتمال حرکات فیک اولیه"
-    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر حجم و نوسان، بهترین زمان برای معامله"
-    if 17 <= hour < 22: return "نیویورک", "ادامه روند یا بازگشت در انتهای روز"
-    return "خارج از سشن‌های اصلی", "نقدینگی بسیار کم"
+    if 0 <= hour < 7: return "آسیا (توکیو/سیدنی)", "نوسان کم"
+    if 7 <= hour < 12: return "لندن", "شروع نقدینگی"
+    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر نوسان"
+    if 17 <= hour < 22: return "نیویورک", "ادامه یا بازگشت روند"
+    return "خارج از سشن‌ها", "نقدینگی کم"
 
 def check_long_signal_conditions(trend_d, trend_4h, last_candle, support, lower_wick, body_size):
     confidence = 0
@@ -109,16 +113,7 @@ def generate_full_report(symbol, is_monitoring=False):
         
         support = df_4h['l'].rolling(20).mean().iloc[-1]
         resistance = df_4h['h'].rolling(20).mean().iloc[-1]
-        report += f"**ناحیه تقاضا/عرضه (4H):** `${support:,.2f}` / `${resistance:,.2f}`\n"
-        
-        last_1h_candle = df_1h.iloc[-1]
-        body_size = abs(last_1h_candle['c'] - last_1h_candle['o'])
-        candle_range = last_1h_candle['h'] - last_1h_candle['l']
-        lower_wick = last_1h_candle['c'] - last_1h_candle['l'] if last_1h_candle['c'] > last_1h_candle['o'] else last_1h_candle['o'] - last_1h_candle['l']
-        if body_size > 0 and lower_wick > body_size * 2 and (candle_range / body_size) > 3:
-            report += "**سیگنال پرایس اکشن (۱ ساعته):** یک **پین‌بار صعودی** قوی شناسایی شد.\n\n"
-        else:
-            report += "**سیگنال پرایس اکشن (۱ ساعته):** کندل آخر سیگنال واضحی ندارد.\n\n"
+        report += f"**ناحیه تقاضا/عرضه (4H):** `${support:,.2f}` / `${resistance:,.2f}`\n\n"
 
         if not is_monitoring:
             report += "**--- تحلیل فاندامنتال و احساسات ---**\n"
@@ -132,6 +127,9 @@ def generate_full_report(symbol, is_monitoring=False):
             report += f"**شاخص احساسات (اخبار):** {sentiment_score}/100\n\n"
             
             report += "**--- پیشنهاد معامله (AI) ---**\n"
+            last_1h_candle = df_1h.iloc[-1]
+            body_size = abs(last_1h_candle['c'] - last_1h_candle['o'])
+            lower_wick = last_1h_candle['c'] - last_1h_candle['l'] if last_1h_candle['c'] > last_1h_candle['o'] else last_1h_candle['o'] - last_1h_candle['l']
             is_long_signal, confidence = check_long_signal_conditions(trend_d.split(" ")[0], trend_4h.split(" ")[0], last_1h_candle, support, lower_wick, body_size)
             if is_long_signal:
                 entry = last_1h_candle['h']
@@ -140,6 +138,7 @@ def generate_full_report(symbol, is_monitoring=False):
                 leverage = 3
                 report += f"✅ **سیگنال خرید (Long) با اطمینان {confidence:.0f}٪ صادر شد.**\n"
                 report += f"**نقطه ورود:** `${entry:,.2f}` | **حد ضرر:** `${stop_loss:,.2f}` | **حد سود:** `${target:,.2f}` | **اهرم:** `x{leverage}`\n"
+                signal_history.append({'symbol': symbol, 'type': 'Golden', 'entry': entry, 'target': target, 'stop': stop_loss, 'result': 'Pending', 'timestamp': datetime.now()})
             else:
                 report += "⚠️ **نتیجه:** در حال حاضر، سیگنال ورود واضحی یافت نشد."
             
@@ -149,7 +148,7 @@ def generate_full_report(symbol, is_monitoring=False):
         return "یک خطای پیش‌بینی نشده در تحلیل.", None
 
 def hunt_signals():
-    global hunted_signals, silver_signals_cache
+    global silver_signals_cache
     watchlist = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'AVAX', 'LINK', 'MATIC', 'DOT', 'ADA', 'LTC', 'BNB', 'NEAR', 'ATOM', 'FTM']
     while True:
         logging.info("SIGNAL_HUNTER: Starting new market scan...")
@@ -197,9 +196,17 @@ def trade_monitor_loop():
                 initial_direction = trade_info['direction']
                 report, current_trend_15m = generate_full_report(symbol, is_monitoring=True)
                 if current_trend_15m is None: continue
+                
+                recommendation_text = ""
                 if (initial_direction == "Long" and "نزولی" in current_trend_15m):
-                    message = f"🚨 **هشدار پایش معامله برای #{symbol}** 🚨\n\n**تغییر در ساختار کوتاه‌مدت مشاهده شد!**\n\n{report}\n\n**توصیه:** لطفاً پوزیشن خود را بازبینی کنید."
-                    bot.sendMessage(chat_id, message, parse_mode='Markdown')
+                    recommendation_text = "❌ **توصیه: خروج از معامله.**\nتحلیل کوتاه‌مدت نشانه‌های قوی از بازگشت روند را نشان می‌دهد."
+                elif (initial_direction == "Long" and "خنثی" in current_trend_15m): # فرض میکنیم خنثی هم میتواند باشد
+                     recommendation_text = "⚠️ **توصیه: مدیریت ریسک.**\nروند کوتاه‌مدت قدرت خود را از دست داده. جابجایی حد ضرر به نقطه ورود پیشنهاد می‌شود."
+                else:
+                    recommendation_text = "✅ **توصیه: حفظ پوزیشن.**\nشرایط فعلی همچنان به نفع معامله شماست."
+                    
+                message = f"🚨 **به‌روزرسانی پایش معامله برای #{symbol}** 🚨\n\n{report}\n\n**--- نتیجه‌گیری پایشگر ---**\n{recommendation_text}"
+                bot.sendMessage(chat_id, message, parse_mode='Markdown')
             except Exception as e:
                 logging.error(f"Error monitoring trade for {symbol}: {e}")
 
@@ -227,11 +234,49 @@ def handle_chat(msg):
         bot.sendMessage(chat_id, 'به ربات هوشمند Apex Sentinel خوش آمدید.',
                         reply_markup=get_main_menu_keyboard(chat_id))
     elif text == '/stats':
-        total_signals = len(signal_history)
-        wins = sum(1 for s in signal_history if s['result'] == 'Win')
-        win_rate = (wins / total_signals * 100) if total_signals > 0 else 0
-        stats_message = f"📊 **آمار عملکرد سیگنال‌ها (شبیه‌سازی شده)**\n\n- **تعداد کل سیگنال‌ها:** {total_signals}\n- **نرخ موفقیت (Win Rate):** {win_rate:.1f}%"
-        bot.sendMessage(chat_id, stats_message)
+        now = datetime.now()
+        current_month = now.month
+        current_year = now.year
+
+        current_month_signals = [s for s in signal_history if s['timestamp'].month == current_month and s['timestamp'].year == current_year]
+        
+        stats_message = f"📊 **آمار عملکرد سیگنال‌ها برای ماه جاری ({current_year}/{current_month})**\n\n"
+        
+        if not current_month_signals:
+            stats_message += "در این ماه هنوز سیگنالی صادر نشده است."
+        else:
+            golden_signals = [s for s in current_month_signals if s['type'] == 'Golden']
+            silver_signals = [s for s in current_month_signals if s['type'] == 'Silver']
+
+            total_wins = sum(1 for s in current_month_signals if s['result'] == 'Win')
+            win_rate = (total_wins / len(current_month_signals) * 100) if current_month_signals else 0
+            
+            stats_message += f"**عملکرد کلی ماه:**\n- تعداد کل سیگنال‌ها: {len(current_month_signals)}\n- نرخ موفقیت (Win Rate): {win_rate:.1f}%\n\n"
+
+            if golden_signals:
+                wins_golden = sum(1 for s in golden_signals if s['result'] == 'Win')
+                win_rate_golden = (wins_golden / len(golden_signals) * 100) if golden_signals else 0
+                stats_message += f"**🥇 سیگنال‌های طلایی:** تعداد: {len(golden_signals)} | نرخ موفقیت: {win_rate_golden:.1f}%\n"
+            
+            if silver_signals:
+                wins_silver = sum(1 for s in silver_signals if s['result'] == 'Win')
+                win_rate_silver = (wins_silver / len(silver_signals) * 100) if silver_signals else 0
+                stats_message += f"**🥈 سیگنال‌های نقره‌ای:** تعداد: {len(silver_signals)} | نرخ موفقیت: {win_rate_silver:.1f}%\n"
+
+            stats_message += "\n**-- جزئیات ۵ سیگنال اخیر ماه --**\n"
+            for signal in reversed(current_month_signals[-5:]):
+                result_emoji = "✅" if signal['result'] == 'Win' else "❌"
+                profit_loss = f"+{((signal['target']/signal['entry']-1)*100):.1f}%" if signal['result'] == 'Win' else f"-{((1-signal['stop']/signal['entry'])*100):.1f}%"
+                stats_message += f"{result_emoji} **{signal['symbol']} ({signal['type']}):** نتیجه: {profit_loss}\n"
+        
+        previous_months_signals = [s for s in signal_history if s['timestamp'].month != current_month or s['timestamp'].year != current_year]
+        if previous_months_signals:
+            stats_message += "\n\n**--- خلاصه عملکرد ماه‌های گذشته ---**\n"
+            prev_wins = sum(1 for s in previous_months_signals if s['result'] == 'Win')
+            prev_win_rate = (prev_wins / len(previous_months_signals) * 100) if previous_months_signals else 0
+            stats_message += f"نرخ موفقیت کلی در ماه‌های گذشته: {prev_win_rate:.1f}%"
+
+        bot.sendMessage(chat_id, stats_message, parse_mode='Markdown')
 
 def handle_callback_query(msg):
     query_id, from_id, query_data = telepot.glance(msg, flavor='callback_query')
@@ -248,14 +293,10 @@ def handle_callback_query(msg):
     elif query_data == 'menu_toggle_signal_hunt':
         if chat_id in signal_hunt_subscribers:
             signal_hunt_subscribers.remove(chat_id)
-            bot.editMessageText((chat_id, msg['message']['message_id']),
-                                "✅ **نوتیفیکیشن سیگنال غیرفعال شد.**",
-                                reply_markup=get_main_menu_keyboard(chat_id))
+            bot.editMessageText((chat_id, msg['message']['message_id']), "✅ **نوتیفیکیشن سیگنال غیرفعال شد.**", reply_markup=get_main_menu_keyboard(chat_id))
         else:
             signal_hunt_subscribers.add(chat_id)
-            bot.editMessageText((chat_id, msg['message']['message_id']),
-                                "✅ **نوتیفیکیشن سیگنال فعال شد.**",
-                                reply_markup=get_main_menu_keyboard(chat_id))
+            bot.editMessageText((chat_id, msg['message']['message_id']), "✅ **نوتیفیکیشن سیگنال فعال شد.**", reply_markup=get_main_menu_keyboard(chat_id))
     elif query_data == 'menu_show_silver_signals':
         if not silver_signals_cache:
             message = "🥈 **سیگنال‌های نقره‌ای:**\n\nدر اسکن اخیر، هیچ سیگنال با اطمینان متوسط یافت نشد."
