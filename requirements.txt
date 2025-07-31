@@ -1,6 +1,8 @@
-telepot
 fastapi
-uvicorn
+uvicorn[standard]
+# نسخه‌های دقیق برای جلوگیری از تداخل و مشکلات نصب
+aiogram==2.25.1
+aiohttp==3.8.3
 pandas
 requests
 ccxt
@@ -8,3 +10,4 @@ ta
 tradingview-ta
 investpy
 scikit-learn
+pytz
