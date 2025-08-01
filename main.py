@@ -10,24 +10,10 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from dotenv import load_dotenv
 
 # واردسازی کتابخانه‌های تلگرام به صورت مستقیم در ابتدای فایل
-try:
-    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-except ImportError:
-    # در صورت عدم نصب کتابخانه‌های تلگرام
-    logging.error("کتابخانه python-telegram-bot نصب نشده است. لطفاً با دستور pip install python-telegram-bot آن را نصب کنید.")
-    Update = object  # تعریف یک کلاس پایه برای جلوگیری از خطا
-    ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': object})
-    InlineKeyboardButton = type('InlineKeyboardButton', (), {})
-    InlineKeyboardMarkup = type('InlineKeyboardMarkup', (), {})
-    Application = type('Application', (), {'builder': lambda: type('Builder', (), {'token': lambda x: type('TokenBuilder', (), {'build': lambda: None})()})})
-    CommandHandler = type('CommandHandler', (), {})
-    CallbackQueryHandler = type('CallbackQueryHandler', (), {})
-    MessageHandler = type('MessageHandler', (), {})
-    ConversationHandler = type('ConversationHandler', (), {'END': -1})
-    filters = type('filters', (), {'TEXT': None, 'COMMAND': None})
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# تنظیم لاگینگ با جزئیات بیشتر
+# تنظیم لاگینگ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -55,15 +41,14 @@ TRADING_PAIRS = [
     "XAU/USD", "EUR/USD", "GBP/USD", "USD/JPY"
 ]
 
-# یک مدل داده ساده برای ذخیره‌سازی وضعیت در حافظه
-# (برای جلوگیری از مشکلات SQLite در محیط‌های محدود)
+# مدل داده‌های حافظه (برای پشتیبان در صورت مشکل با پایگاه داده)
 memory_db = {
     "users": {},  # {user_id: {gold_notifications: bool, created_at: timestamp}}
     "signals": [],  # [{id, symbol, direction, ...}]
     "monitored_trades": []  # [{id, user_id, symbol, direction, ...}]
 }
 
-# راه‌اندازی پایگاه داده (با پشتیبانی از ذخیره‌سازی در حافظه در صورت خطا)
+# راه‌اندازی پایگاه داده (با پشتیبانی از ذخیره‌سازی در حافظه)
 def setup_database():
     try:
         conn = sqlite3.connect('trading_bot.db')
@@ -333,45 +318,6 @@ class Database:
             return True
     
     @staticmethod
-    def get_user_monitored_trades(user_id):
-        try:
-            trades = []
-            
-            # ابتدا تلاش برای دریافت از SQLite
-            conn = Database.get_connection()
-            if conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                SELECT id, symbol, direction, entry_time
-                FROM monitored_trades
-                WHERE user_id = ?
-                """, (user_id,))
-                sqlite_trades = cursor.fetchall()
-                trades.extend(sqlite_trades)
-                conn.close()
-            
-            # اضافه کردن معاملات از حافظه
-            # اگر از SQLite دریافت نکردیم، کامل از حافظه استفاده می‌کنیم
-            if not trades:
-                memory_trades = [
-                    (trade["id"], trade["symbol"], trade["direction"], trade["entry_time"])
-                    for trade in memory_db["monitored_trades"]
-                    if trade["user_id"] == user_id
-                ]
-                trades.extend(memory_trades)
-            
-            return trades
-        except Exception as e:
-            logger.error(f"خطا در دریافت معاملات تحت نظارت کاربر {user_id}: {e}")
-            # فقط از حافظه استفاده می‌کنیم
-            memory_trades = [
-                (trade["id"], trade["symbol"], trade["direction"], trade["entry_time"])
-                for trade in memory_db["monitored_trades"]
-                if trade["user_id"] == user_id
-            ]
-            return memory_trades
-    
-    @staticmethod
     def get_all_monitored_trades():
         try:
             trades = []
@@ -455,49 +401,25 @@ class AnalysisEngine:
                     cache_valid = True
             
             if not cache_valid:
-                # تلاش برای دریافت قیمت واقعی
-                try:
-                    # وارد کردن کتابخانه‌ها در زمان اجرا برای جلوگیری از خطا در صورت عدم نصب
-                    import ccxt
-                    exchange = ccxt.kucoin()  # یا هر صرافی دیگری که در ایران قابل دسترسی است
-                    ticker = exchange.fetch_ticker(symbol)
-                    price = ticker['last']
-                    
-                    # ذخیره در کش
-                    AnalysisEngine._price_cache[symbol] = {
-                        'price': price,
-                        'timestamp': datetime.now()
-                    }
-                    
-                    return price
-                except Exception as e:
-                    logger.warning(f"خطا در دریافت قیمت واقعی برای {symbol}: {e}")
-                    
-                    # اگر در کش موجود است، از آن استفاده می‌کنیم
-                    if symbol in AnalysisEngine._price_cache:
-                        logger.info(f"استفاده از قیمت کش شده برای {symbol}")
-                        return AnalysisEngine._price_cache[symbol]['price']
-                    
-                    # تولید قیمت ساختگی
-                    logger.info(f"تولید قیمت ساختگی برای {symbol}")
-                    if 'BTC' in symbol:
-                        price = 35000 + random.uniform(-500, 500)
-                    elif 'ETH' in symbol:
-                        price = 2000 + random.uniform(-50, 50)
-                    elif 'XAU' in symbol:
-                        price = 2400 + random.uniform(-20, 20)
-                    elif 'USD' in symbol:
-                        price = 1.1 + random.uniform(-0.01, 0.01)
-                    else:
-                        price = 10 + random.uniform(-1, 1)
-                    
-                    # ذخیره در کش
-                    AnalysisEngine._price_cache[symbol] = {
-                        'price': price,
-                        'timestamp': datetime.now()
-                    }
-                    
-                    return price
+                # تولید قیمت تصادفی برای تست
+                if 'BTC' in symbol:
+                    price = 35000 + random.uniform(-500, 500)
+                elif 'ETH' in symbol:
+                    price = 2000 + random.uniform(-50, 50)
+                elif 'XAU' in symbol:
+                    price = 2400 + random.uniform(-20, 20)
+                elif 'USD' in symbol:
+                    price = 1.1 + random.uniform(-0.01, 0.01)
+                else:
+                    price = 10 + random.uniform(-1, 1)
+                
+                # ذخیره در کش
+                AnalysisEngine._price_cache[symbol] = {
+                    'price': price,
+                    'timestamp': datetime.now()
+                }
+                
+                return price
             else:
                 # استفاده از کش
                 return AnalysisEngine._price_cache[symbol]['price']
