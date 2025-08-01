@@ -9,6 +9,24 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dotenv import load_dotenv
 
+# واردسازی کتابخانه‌های تلگرام به صورت مستقیم در ابتدای فایل
+try:
+    from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+except ImportError:
+    # در صورت عدم نصب کتابخانه‌های تلگرام
+    logging.error("کتابخانه python-telegram-bot نصب نشده است. لطفاً با دستور pip install python-telegram-bot آن را نصب کنید.")
+    Update = object  # تعریف یک کلاس پایه برای جلوگیری از خطا
+    ContextTypes = type('ContextTypes', (), {'DEFAULT_TYPE': object})
+    InlineKeyboardButton = type('InlineKeyboardButton', (), {})
+    InlineKeyboardMarkup = type('InlineKeyboardMarkup', (), {})
+    Application = type('Application', (), {'builder': lambda: type('Builder', (), {'token': lambda x: type('TokenBuilder', (), {'build': lambda: None})()})})
+    CommandHandler = type('CommandHandler', (), {})
+    CallbackQueryHandler = type('CallbackQueryHandler', (), {})
+    MessageHandler = type('MessageHandler', (), {})
+    ConversationHandler = type('ConversationHandler', (), {'END': -1})
+    filters = type('filters', (), {'TEXT': None, 'COMMAND': None})
+
 # تنظیم لاگینگ با جزئیات بیشتر
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1138,10 +1156,6 @@ class TradingBot:
     def __init__(self, token):
         try:
             logger.info("در حال راه‌اندازی ربات تلگرام...")
-            
-            # وارد کردن کتابخانه‌ها در زمان اجرا برای جلوگیری از خطا در صورت عدم نصب
-            from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-            from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
             
             self.token = token
             self.application = Application.builder().token(token).build()
