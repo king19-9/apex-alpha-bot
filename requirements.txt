@@ -6,6 +6,6 @@ requests
 ccxt
 ta
 tradingview-ta
-investpy
+investpy # <--- کتابخانه جدید برای داده‌های اقتصادی
 scikit-learn
 pytz
