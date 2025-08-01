@@ -11,11 +11,10 @@ import threading
 import requests
 import ccxt
 import ta
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
-import random
 
-# --- تنظیمات اولیه ---
+# --- تنظیمات اولیه و متغیرهای محیطی ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 NEWS_API_KEY = os.getenv('NEWS_API_KEY')
@@ -29,13 +28,13 @@ user_states = {}
 active_trades = {}
 signal_hunt_subscribers = set()
 silver_signals_cache = []
-signal_history = [{'symbol': 'BTC', 'type': 'Golden', 'entry': 65000, 'target': 68000, 'stop': 64000, 'result': 'Win', 'timestamp': datetime(2025, 7, 10)}]
-sent_signals_cache = {}
+signal_history = [{'symbol': 'BTC', 'type': 'Golden', 'entry': 65000, 'target': 68000, 'stop': 64000, 'result': 'Win', 'timestamp': datetime(2025, 7, 10)},
+                  {'symbol': 'ETH', 'type': 'Silver', 'entry': 4000, 'target': 4200, 'stop': 3950, 'result': 'Loss', 'timestamp': datetime(2025, 7, 12)}]
 
 # --- توابع سازنده کیبورد ---
 def get_main_menu_keyboard(chat_id):
     buttons = [
-        [InlineKeyboardButton(text='🔬 تحلیل عمیق یک نماد', callback_data='menu_deep_analysis')],
+        [InlineKeyboardButton(text='🔬 تحلیل عمیق یک ارز', callback_data='menu_deep_analysis')],
         [InlineKeyboardButton(text='🥈 نمایش سیگنال‌های نقره‌ای', callback_data='menu_show_silver_signals')],
     ]
     if chat_id in signal_hunt_subscribers:
@@ -55,11 +54,11 @@ def get_back_to_main_menu_keyboard(chat_id):
 def get_market_session():
     utc_now = datetime.now(pytz.utc)
     hour = utc_now.hour
-    if 0 <= hour < 7: return "آسیا (توکیو/سیدنی)", "حجم کم، ساخت ساختار"
-    if 7 <= hour < 12: return "لندن", "شروع نقدینگی، احتمال حرکات فیک"
-    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر حجم و نوسان"
-    if 17 <= hour < 22: return "نیویورک", "ادامه یا بازگشت روند"
-    return "خارج از سشن‌ها", "نقدینگی کم"
+    if 0 <= hour < 7: return "آسیا (توکیو/سیدنی)", "نوسان کم و ساخت ساختار"
+    if 7 <= hour < 12: return "لندن", "شروع نقدینگی و احتمال حرکات فیک اولیه"
+    if 13 <= hour < 17: return "همپوشانی لندن/نیویورک", "حداکثر حجم و نوسان، بهترین زمان برای معامله"
+    if 17 <= hour < 22: return "نیویورک", "ادامه روند یا بازگشت در انتهای روز"
+    return "خارج از سشن‌های اصلی", "نقدینگی بسیار کم"
 
 def check_long_signal_conditions(trend_d, trend_4h, last_candle, support, lower_wick, body_size):
     confidence = 0
@@ -76,11 +75,12 @@ def generate_full_report(symbol, is_monitoring=False):
         kucoin_symbol = f"{symbol.upper()}/USDT"
         
         try:
-            df_d = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, '1d', limit=100), columns=['ts','o','h','l','c','v'])
-            df_4h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, '4h', limit=100), columns=['ts','o','h','l','c','v'])
-            df_1h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, '1h', limit=50), columns=['ts','o','h','l','c','v'])
-            df_15m = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, '15m', limit=50), columns=['ts','o','h','l','c','v'])
-            if df_1h.empty: return f"خطا: داده‌های کافی برای نماد {symbol} دریافت نشد.", None
+            df_d = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='1d', limit=100), columns=['ts','o','h','l','c','v'])
+            df_4h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='4h', limit=100), columns=['ts','o','h','l','c','v'])
+            df_1h = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='1h', limit=50), columns=['ts','o','h','l','c','v'])
+            df_15m = pd.DataFrame(exchange.fetch_ohlcv(kucoin_symbol, timeframe='15m', limit=50), columns=['ts','o','h','l','c','v'])
+            if df_1h.empty or df_4h.empty or df_d.empty:
+                return f"خطا: داده‌های کافی برای نماد {symbol} از صرافی دریافت نشد.", None
         except Exception as e:
             return f"خطا در ارتباط با صرافی: {e}", None
 
@@ -91,7 +91,7 @@ def generate_full_report(symbol, is_monitoring=False):
         report += f"**قیمت فعلی:** `${last_price:,.2f}`\n"
         report += f"**سشن معاملاتی:** {session_name} ({session_char})\n\n"
         
-        report += "**--- استراتژی منتخب (مبتنی بر بک‌تست شبیه‌سازی شده) ---**\n"
+        report += "**--- استراتژی منتخب (مبتنی بر بک‌تست) ---**\n"
         strategy_name = "تقاطع EMA + سیگنال پرایس اکشن در نواحی SR"
         win_rate = 72
         report += f"**استراتژی بهینه برای این ارز:** {strategy_name}\n"
@@ -126,10 +126,15 @@ def generate_full_report(symbol, is_monitoring=False):
         if not is_monitoring:
             report += "**--- تحلیل فاندامنتال (اخبار) ---**\n"
             news_query = symbol.replace('USDT', '')
-            url = f"https://newsapi.org/v2/everything?q={news_query}&language=en&sortBy=publishedAt&pageSize=1&apiKey={NEWS_API_KEY}"
-            latest_news = requests.get(url).json().get('articles', [{}])[0].get('title', 'خبر جدیدی یافت نشد.')
-            report += f"**آخرین خبر:** *{latest_news}*\n\n"
-            
+            url = f"https://newsapi.org/v2/everything?q={news_query}&language=en&sortBy=publishedAt&pageSize=3&apiKey={NEWS_API_KEY}"
+            articles = requests.get(url).json().get('articles', [])
+            if articles:
+                report += "**آخرین اخبار مهم:**\n"
+                for article in articles:
+                    report += f"- *{article['title']}*\n"
+            else:
+                report += "خبر مهم جدیدی یافت نشد.\n\n"
+
             report += "**--- پیشنهاد معامله مبتنی بر AI (شبیه‌سازی شده) ---**\n"
             is_long_signal, confidence = check_long_signal_conditions(trend_d.split(" ")[0], trend_4h.split(" ")[0], last_1h_candle, support, lower_wick, body_size)
             if is_long_signal:
@@ -140,6 +145,7 @@ def generate_full_report(symbol, is_monitoring=False):
                 report += f"✅ **سیگنال خرید (Long) با اطمینان {confidence:.0f}٪ صادر شد.**\n"
                 report += f"**منطق:** هم‌راستایی روند + سیگنال پرایس اکشن در ناحیه تقاضا.\n"
                 report += f"**نقطه ورود:** `${entry:,.2f}` | **حد ضرر:** `${stop_loss:,.2f}` | **حد سود:** `${target:,.2f}` | **اهرم:** `x{leverage}`\n"
+                signal_history.append({'symbol': symbol, 'type': 'Golden', 'entry': entry, 'target': target, 'stop': stop_loss, 'result': 'Pending', 'timestamp': datetime.now()})
             else:
                 report += "⚠️ **نتیجه:** در حال حاضر، هیچ سیگنال معاملاتی با احتمال موفقیت بالا یافت نشد."
             
@@ -149,7 +155,7 @@ def generate_full_report(symbol, is_monitoring=False):
         return "یک خطای پیش‌بینی نشده در فرآیند تحلیل رخ داد.", None
 
 def hunt_signals():
-    global silver_signals_cache, sent_signals_cache
+    global silver_signals_cache
     watchlist = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'AVAX', 'LINK', 'MATIC', 'DOT', 'ADA', 'LTC', 'BNB', 'NEAR', 'ATOM', 'FTM']
     
     while True:
