@@ -23,8 +23,8 @@ from sklearn.metrics import accuracy_score
 import pandas as pd
 import numpy as np
 
-# بهبود 2: امنیت و حریم خصوصی با PostgreSQL
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, JSON, text
+# بهبود 2: امنیت و حریم خصوصی با SQLite (ساده و بدون سرور خارجی)
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -41,11 +41,10 @@ logger = logging.getLogger(__name__)
 # تنظیمات APIها و کلیدها (این‌ها رو جایگزین کنید)
 NEWS_API_KEY = 'YOUR_NEWSAPI_KEY_HERE'  # از newsapi.org بگیرید
 TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_HERE'  # از BotFather بگیرید
-DATABASE_URL = 'postgresql://user:pass@host/db'  # از Railway بگیرید (مثال: postgresql://postgres:password@containers-us-west-123.railway.app:5432/railway)
 REDIS_URL = 'redis://user:pass@host:port'  # از Railway بگیرید (مثال: redis://red-abc:password@containers-us-west-456.railway.app:6379)
 
-# بهبود 2: تنظیم PostgreSQL
-engine = create_engine(DATABASE_URL)
+# بهبود 2: تنظیم SQLite
+engine = create_engine('sqlite:///db.sqlite3', echo=True)  # فایل db.sqlite3 خودکار ساخته می‌شود
 Base = declarative_base()
 Session = sessionmaker(bind=engine)
 
