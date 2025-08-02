@@ -1,9 +1,11 @@
-python-telegram-bot==20.0
-ccxt==4.0.0
-tradingview-ta==3.2.10
-investpy==1.0.8
-newsapi-python==0.2.7
-apscheduler==3.10.1
-pandas==2.0.0
-numpy==1.24.0
-sqlite3  # built-in
+python-telegram-bot
+yfinance
+tradingview-ta
+investpy
+newsapi-python
+apscheduler
+scikit-learn
+sqlalchemy
+psycopg2-binary
+redis
+flask
