@@ -3,6 +3,7 @@ import threading
 import time
 import random
 import sys
+import os  # اضافه شده برای خواندن محیط
 from datetime import datetime
 from typing import Dict, List
 from urllib.parse import urlparse
@@ -41,7 +42,10 @@ logger = logging.getLogger(__name__)
 # تنظیمات APIها و کلیدها (این‌ها رو جایگزین کنید)
 NEWS_API_KEY = 'YOUR_NEWSAPI_KEY_HERE'  # از newsapi.org بگیرید
 TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN_HERE'  # از BotFather بگیرید
-REDIS_URL = 'redis://user:pass@host:port'  # از Railway بگیرید (مثال: redis://red-abc:password@containers-us-west-456.railway.app:6379)
+
+# بهبود 6: تنظیم Redis (از محیط بخوانید؛ پیش‌فرض محلی برای تست)
+REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')  # در Railway، این را در Variables تنظیم کنید
+redis_client = redis.from_url(REDIS_URL)
 
 # بهبود 2: تنظیم SQLite
 engine = create_engine('sqlite:///db.sqlite3', echo=True)  # فایل db.sqlite3 خودکار ساخته می‌شود
@@ -58,9 +62,6 @@ class UserData(Base):
     language = Column(String, default='fa')  # بهبود 4: پشتیبانی زبان (fa/en)
 
 Base.metadata.create_all(engine)
-
-# بهبود 6: تنظیم Redis
-redis_client = redis.from_url(REDIS_URL)
 
 # بهبود 4: داشبورد ساده Flask برای stats
 app = Flask(__name__)
@@ -408,7 +409,6 @@ def main():
     application.run_polling()
 
     # برای webhook (بهبود 4 - سرعت بیشتر؛ در Railway فعال کنید)
-    # import os
     # PORT = int(os.environ.get('PORT', 8443))
     # application.run_webhook(listen='0.0.0.0', port=PORT, url_path=TOKEN, webhook_url='https://your-railway-app.up.railway.app/' + TOKEN)
 
