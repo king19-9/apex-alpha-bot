@@ -200,4 +200,218 @@ def monitor_trades(user_id: int):
                 report = get_deep_analysis(trade['symbol'])
                 # چک تضاد ساده (گسترش دهید)
                 if (trade['direction'] == 'Long' and 'SELL' in report) or (trade['direction'] == 'Short' and 'BUY' in report):
-                    logger.info(f"هشدار برای {user_id}: {trade['symbol']}
+                    logger.info(f"هشدار برای {user_id}: {trade['symbol']} - گزارش: {report}")
+                time.sleep(1)  # برای نامحدود بودن ایمن
+    scheduler.add_job(monitor_job, 'interval', minutes=5, id=f'monitor_{user_id}')
+
+# هندلرهای تلگرام (با پشتیبانی زبان - بهبود 4)
+async def start(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    with Session() as session:
+        user = session.query(UserData).filter_by(user_id=user_id).first()
+        if not user:
+            user = UserData(user_id=user_id)
+            session.add(user)
+            session.commit()
+        lang = user.language
+    # متن بر اساس زبان
+    menu_text = 'منوی اصلی (گزینه‌های ۱ تا ۶):' if lang == 'fa' else 'Main Menu (Options 1 to 6):'
+    keyboard = [
+        [InlineKeyboardButton("1. 🔬 تحلیل عمیق یک نماد" if lang == 'fa' else "1. Deep Analysis", callback_data='analyze')],
+        [InlineKeyboardButton("2. 🥈 نمایش سیگنال‌های نقره‌ای" if lang == 'fa' else "2. Silver Signals", callback_data='silver_signals')],
+        [InlineKeyboardButton("3. 🔔 فعال نوتیفیکیشن طلایی" if lang == 'fa' else "3. Enable Gold Notifications", callback_data='enable_gold'), 
+         InlineKeyboardButton("🔕 غیرفعال" if lang == 'fa' else "Disable", callback_data='disable_gold')],
+        [InlineKeyboardButton("4. 👁️ پایش معامله باز" if lang == 'fa' else "4. Monitor Trade", callback_data='monitor'), 
+         InlineKeyboardButton("🚫 توقف پایش" if lang == 'fa' else "Stop Monitoring", callback_data='stop_monitor')],
+        [InlineKeyboardButton("5. 📊 نمایش و مدیریت واچ‌لیست" if lang == 'fa' else "5. Watchlist Management", callback_data='watchlist')],
+        [InlineKeyboardButton("6. ⚙️ تنظیمات پیشرفته" if lang == 'fa' else "6. Advanced Settings", callback_data='settings')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(menu_text, reply_markup=reply_markup)
+
+async def button_handler(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    data = query.data
+    user_id = query.from_user.id
+    with Session() as session:
+        user = session.query(UserData).filter_by(user_id=user_id).first()
+        lang = user.language if user else 'fa'
+    
+    if data == 'analyze':
+        text = 'نام نماد را وارد کنید (مثل BTC-USD):' if lang == 'fa' else 'Enter symbol (e.g., BTC-USD):'
+        await query.message.reply_text(text)
+        context.user_data['state'] = 'analyze'
+    elif data == 'silver_signals':
+        signals = scan_signals(user_id)
+        silver = [s for s in signals if s['level'] == 'نقره‌ای']
+        text = "\n".join([f"{s['symbol']}: اطمینان {s['confidence']*100:.2f}%\n{s['report']}" for s in silver]) or ('هیچ سیگنال نقره‌ای یافت نشد.' if lang == 'fa' else 'No silver signals found.')
+        await query.message.reply_text(text)
+    elif data == 'enable_gold':
+        with Session() as session:
+            user = session.query(UserData).filter_by(user_id=user_id).first()
+            user.notifications_enabled = True
+            session.commit()
+        text = 'نوتیفیکیشن طلایی فعال شد.' if lang == 'fa' else 'Gold notifications enabled.'
+        await query.message.reply_text(text)
+    elif data == 'disable_gold':
+        with Session() as session:
+            user = session.query(UserData).filter_by(user_id=user_id).first()
+            user.notifications_enabled = False
+            session.commit()
+        text = 'نوتیفیکیشن طلایی غیرفعال شد.' if lang == 'fa' else 'Gold notifications disabled.'
+        await query.message.reply_text(text)
+    elif data == 'monitor':
+        text = 'نام نماد و جهت (مثل BTC-USD Long) یا "all" برای همه واچ‌لیست:' if lang == 'fa' else 'Enter symbol and direction (e.g., BTC-USD Long) or "all" for watchlist:'
+        await query.message.reply_text(text)
+        context.user_data['state'] = 'monitor'
+    elif data == 'stop_monitor':
+        with Session() as session:
+            user = session.query(UserData).filter_by(user_id=user_id).first()
+            if user:
+                user.monitored_trades = []
+                session.commit()
+        text = 'پایش متوقف شد.' if lang == 'fa' else 'Monitoring stopped.'
+        await query.message.reply_text(text)
+        if scheduler.get_job(f'monitor_{user_id}'):
+            scheduler.remove_job(f'monitor_{user_id}')
+    elif data == 'watchlist':
+        text = 'دستور: add SYMBOL برای اضافه، remove SYMBOL برای حذف، یا list برای نمایش.' if lang == 'fa' else 'Command: add SYMBOL to add, remove SYMBOL to remove, or list to show.'
+        await query.message.reply_text(text)
+        context.user_data['state'] = 'watchlist'
+    elif data == 'settings':
+        text = 'تنظیمات: مثلاً "lang en" برای انگلیسی یا "lang fa" برای فارسی.' if lang == 'fa' else 'Settings: e.g., "lang en" for English or "lang fa" for Persian.'
+        await query.message.reply_text(text)
+        context.user_data['state'] = 'settings'
+
+async def text_handler(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    text = update.message.text.strip()
+    state = context.user_data.get('state')
+    with Session() as session:
+        user = session.query(UserData).filter_by(user_id=user_id).first()
+        if not user:
+            user = UserData(user_id=user_id)
+            session.add(user)
+            session.commit()
+        lang = user.language
+    
+    if state == 'analyze':
+        report = get_deep_analysis(text)
+        await update.message.reply_text(report)
+    elif state == 'monitor':
+        with Session() as session:
+            user = session.query(UserData).filter_by(user_id=user_id).first()
+            if text.lower() == 'all':
+                for sym in user.watchlist:
+                    user.monitored_trades.append({'symbol': sym, 'direction': 'Long'})  # پیش‌فرض Long
+                reply = f'پایش همه {len(user.watchlist)} نماد شروع شد (نامحدود).' if lang == 'fa' else f'Monitoring all {len(user.watchlist)} symbols started (unlimited).'
+            else:
+                parts = text.split()
+                symbol = parts[0]
+                direction = parts[1] if len(parts) > 1 else 'Long'
+                user.monitored_trades.append({'symbol': symbol, 'direction': direction})
+                reply = f'پایش {symbol} {direction} اضافه شد (نامحدود).' if lang == 'fa' else f'Monitoring {symbol} {direction} added (unlimited).'
+            session.commit()
+        await update.message.reply_text(reply)
+        monitor_trades(user_id)  # شروع پایش
+    elif state == 'watchlist':
+        with Session() as session:
+            user = session.query(UserData).filter_by(user_id=user_id).first()
+            if text.startswith('add '):
+                sym = text.split('add ')[1]
+                user.watchlist.append(sym)
+                reply = f'{sym} به واچ‌لیست اضافه شد (نامحدود).' if lang == 'fa' else f'{sym} added to watchlist (unlimited).'
+            elif text.startswith('remove '):
+                sym = text.split('remove ')[1]
+                if sym in user.watchlist:
+                    user.watchlist.remove(sym)
+                    reply = f'{sym} حذف شد.' if lang == 'fa' else f'{sym} removed.'
+                else:
+                    reply = 'نماد یافت نشد.' if lang == 'fa' else 'Symbol not found.'
+            elif text == 'list':
+                reply = f'واچ‌لیست شما (نامحدود): {", ".join(user.watchlist) or "خالی"}' if lang == 'fa' else f'Your watchlist (unlimited): {", ".join(user.watchlist) or "empty"}'
+            else:
+                reply = 'دستور نامعتبر.' if lang == 'fa' else 'Invalid command.'
+            session.commit()
+        await update.message.reply_text(reply)
+    elif state == 'settings':
+        with Session() as session:
+            user = session.query(UserData).filter_by(user_id=user_id).first()
+            if text.startswith('lang '):
+                new_lang = text.split('lang ')[1].lower()
+                if new_lang in ['fa', 'en']:
+                    user.language = new_lang
+                    reply = 'زبان تغییر کرد.' if new_lang == 'fa' else 'Language changed.'
+                else:
+                    reply = 'زبان نامعتبر.' if lang == 'fa' else 'Invalid language.'
+            else:
+                reply = 'تنظیمات اعمال شد (شبیه‌سازی).' if lang == 'fa' else 'Settings applied (simulated).'
+            session.commit()
+        await update.message.reply_text(reply)
+    context.user_data.pop('state', None)
+
+async def stats(update: Update, context: CallbackContext) -> None:
+    history = eval(redis_client.get('signal_history') or b'[]'.decode())
+    total_signals = len(history)
+    win_rate = sum(1 for s in history if s['profit'] > 0) / total_signals if total_signals > 0 else 0
+    gold_win = sum(1 for s in history if s['level'] == 'طلایی' and s['profit'] > 0) / len([s for s in history if s['level'] == 'طلایی']) or 0
+    silver_win = sum(1 for s in history if s['level'] == 'نقره‌ای' and s['profit'] > 0) / len([s for s in history if s['level'] == 'نقره‌ای']) or 0
+    recent = "\n".join([f"{s['symbol']}: {s['level']}, سود: {s['profit']:.2f}%, تاریخ: {s['date']}" for s in history[-30:]])
+    report = f"""
+آمار عملکرد:
+کل سیگنال‌ها: {total_signals}
+نرخ موفقیت کلی: {win_rate*100:.2f}%
+طلایی: {gold_win*100:.2f}%
+نقره‌ای: {silver_win*100:.2f}%
+یک ماه اخیر: {recent}
+"""
+    await update.message.reply_text(report)
+
+# بهبود 7: تابع تست
+def run_tests():
+    # تست تحلیل
+    mock_symbol = 'BTC-USD'
+    report = get_deep_analysis(mock_symbol)
+    assert 'تحلیل عمیق' in report, "تست تحلیل شکست خورد"
+    
+    # تست ML
+    mock_data = pd.DataFrame({
+        'Open': np.random.rand(100),
+        'High': np.random.rand(100),
+        'Low': np.random.rand(100),
+        'Close': np.random.rand(100),
+        'Volume': np.random.rand(100)
+    })
+    model = train_ml_model(mock_data)
+    assert model is not None, "تست ML شکست خورد"
+    
+    logger.info("✅ همه تست‌ها موفق بودند! برنامه آماده است.")
+
+def main():
+    if '--test' in sys.argv:
+        run_tests()
+        return
+
+    # شروع Flask در thread جدا (بهبود 4)
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # شروع اسکنر (بهبود 3)
+    threading.Thread(target=background_scanner, daemon=True).start()
+
+    # تنظیم تلگرام (برای وب‌هوک، اگر می‌خواهید سرعت بیشتر، فعال کنید)
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("lang", lambda update, context: text_handler(update, context)))  # برای تغییر زبان
+
+    # برای polling (ساده)
+    application.run_polling()
+
+    # برای webhook (بهبود 4 - سرعت بیشتر؛ در Railway فعال کنید)
+    # PORT = int(os.environ.get('PORT', 8443))
+    # application.run_webhook(listen='0.0.0.0', port=PORT, url_path=TOKEN, webhook_url='https://your-railway-app.up.railway.app/' + TOKEN)
+
+if __name__ == '__main__':
+    main()
