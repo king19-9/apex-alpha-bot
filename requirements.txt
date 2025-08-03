@@ -11,7 +11,7 @@ redis
 flask
 ccxt
 nltk
+tensorflow
 backtrader
+stable-baselines3
 gym
-# tensorflow  # کامنت برای تست؛ uncomment بعد
-# stable-baselines3  # کامنت برای تست؛ uncomment بعد
