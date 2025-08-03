@@ -57,6 +57,7 @@ class UserData(Base):
     monitored_trades = Column(JSON, default=list)  # لیست نامحدود
     watchlist = Column(JSON, default=list)  # لیست نامحدود
     language = Column(String, default='fa')  # بهبود 4: پشتیبانی زبان (fa/en)
+    current_state = Column(String, default=None)  # جدید: ذخیره state در DB برای پایداری
 
 Base.metadata.create_all(engine)
 
@@ -121,11 +122,14 @@ def select_best_strategy(symbol: str) -> Dict:
 def get_deep_analysis(symbol: str) -> str:
     logger.debug(f"شروع تحلیل برای {symbol}")
     try:
+        # بهبود: فرمت نماد برای TA_Handler
+        tv_symbol = symbol.replace('-', '')
+        screener = "crypto" if 'USD' in symbol else "forex"
+        handler = TA_Handler(symbol=tv_symbol, screener=screener, exchange="BINANCE", interval=Interval.INTERVAL_1_DAY)
+        tv_analysis = handler.get_analysis().summary
         best = select_best_strategy(symbol)
         ticker = yf.Ticker(symbol)
         price = ticker.history(period='1d')['Close'].iloc[-1]
-        handler = TA_Handler(symbol=symbol.split('-')[0], screener="crypto" if 'USD' in symbol else "forex", exchange="BINANCE", interval=Interval.INTERVAL_1_DAY)
-        tv_analysis = handler.get_analysis().summary
         economic_data = investpy.get_economic_calendar(countries=['united states'], from_date='01/01/2023', to_date=datetime.now().strftime('%d/%m/%Y'))
         fed_rate = economic_data[economic_data['event'].str.contains('Fed')].iloc[-1]['actual'] if not economic_data.empty else 'N/A'
         articles = newsapi.get_everything(q=symbol, language='en', sort_by='publishedAt', page_size=5)
@@ -149,7 +153,7 @@ def get_deep_analysis(symbol: str) -> str:
         return report
     except Exception as e:
         logger.error(f"خطا در تحلیل عمیق: {str(e)}")
-        return f"خطا در تحلیل: {str(e)}"
+        return f"خطا در تحلیل {symbol}: {str(e)} (نماد را چک کنید، مثل BTCUSD)"
 
 def scan_signals(user_id: int) -> List[Dict]:
     logger.debug(f"شروع اسکن سیگنال برای کاربر {user_id}")
@@ -235,58 +239,55 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     with Session() as session:
         user = session.query(UserData).filter_by(user_id=user_id).first()
         lang = user.language if user else 'fa'
+        user.current_state = data  # ذخیره state در DB
+        session.commit()
     
     if data == 'analyze':
         text = 'نام نماد را وارد کنید (مثل BTC-USD):' if lang == 'fa' else 'Enter symbol (e.g., BTC-USD):'
         await query.message.reply_text(text)
-        context.user_data['state'] = 'analyze'
     elif data == 'silver_signals':
         signals = scan_signals(user_id)
         silver = [s for s in signals if s['level'] == 'نقره‌ای']
         text = "\n".join([f"{s['symbol']}: اطمینان {s['confidence']*100:.2f}%\n{s['report']}" for s in silver]) or ('هیچ سیگنال نقره‌ای یافت نشد.' if lang == 'fa' else 'No silver signals found.')
         await query.message.reply_text(text)
+        user.current_state = None  # پاک کردن state
+        session.commit()
     elif data == 'enable_gold':
-        with Session() as session:
-            user = session.query(UserData).filter_by(user_id=user_id).first()
-            user.notifications_enabled = True
-            session.commit()
+        user.notifications_enabled = True
+        session.commit()
         text = 'نوتیفیکیشن طلایی فعال شد.' if lang == 'fa' else 'Gold notifications enabled.'
         await query.message.reply_text(text)
+        user.current_state = None
+        session.commit()
     elif data == 'disable_gold':
-        with Session() as session:
-            user = session.query(UserData).filter_by(user_id=user_id).first()
-            user.notifications_enabled = False
-            session.commit()
+        user.notifications_enabled = False
+        session.commit()
         text = 'نوتیفیکیشن طلایی غیرفعال شد.' if lang == 'fa' else 'Gold notifications disabled.'
         await query.message.reply_text(text)
+        user.current_state = None
+        session.commit()
     elif data == 'monitor':
         text = 'نام نماد و جهت (مثل BTC-USD Long) یا "all" برای همه واچ‌لیست:' if lang == 'fa' else 'Enter symbol and direction (e.g., BTC-USD Long) or "all" for watchlist:'
         await query.message.reply_text(text)
-        context.user_data['state'] = 'monitor'
     elif data == 'stop_monitor':
-        with Session() as session:
-            user = session.query(UserData).filter_by(user_id=user_id).first()
-            if user:
-                user.monitored_trades = []
-                session.commit()
+        user.monitored_trades = []
+        session.commit()
         text = 'پایش متوقف شد.' if lang == 'fa' else 'Monitoring stopped.'
         await query.message.reply_text(text)
         if scheduler.get_job(f'monitor_{user_id}'):
             scheduler.remove_job(f'monitor_{user_id}')
+        user.current_state = None
+        session.commit()
     elif data == 'watchlist':
         text = 'دستور: add SYMBOL برای اضافه، remove SYMBOL برای حذف، یا list برای نمایش.' if lang == 'fa' else 'Command: add SYMBOL to add, remove SYMBOL to remove, or list to show.'
         await query.message.reply_text(text)
-        context.user_data['state'] = 'watchlist'
     elif data == 'settings':
         text = 'تنظیمات: مثلاً "lang en" برای انگلیسی یا "lang fa" برای فارسی.' if lang == 'fa' else 'Settings: e.g., "lang en" for English or "lang fa" for Persian.'
         await query.message.reply_text(text)
-        context.user_data['state'] = 'settings'
 
 async def text_handler(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
     text = update.message.text.strip()
-    state = context.user_data.get('state')
-    logger.debug(f"پیام متن دریافت شد از کاربر {user_id}: {text}, state: {state}")
     with Session() as session:
         user = session.query(UserData).filter_by(user_id=user_id).first()
         if not user:
@@ -294,13 +295,15 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
             session.add(user)
             session.commit()
         lang = user.language
+        state = user.current_state  # خواندن state از DB
+        logger.debug(f"پیام متن دریافت شد از کاربر {user_id}: {text}, state: {state}")
     
-    if state == 'analyze':
-        report = get_deep_analysis(text)
-        await update.message.reply_text(report)
-    elif state == 'monitor':
-        with Session() as session:
-            user = session.query(UserData).filter_by(user_id=user_id).first()
+        if state == 'analyze':
+            report = get_deep_analysis(text)
+            await update.message.reply_text(report)
+            user.current_state = None
+            session.commit()
+        elif state == 'monitor':
             if text.lower() == 'all':
                 for sym in user.watchlist:
                     user.monitored_trades.append({'symbol': sym, 'direction': 'Long'})
@@ -312,11 +315,11 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
                 user.monitored_trades.append({'symbol': symbol, 'direction': direction})
                 reply = f'پایش {symbol} {direction} اضافه شد (نامحدود).' if lang == 'fa' else f'Monitoring {symbol} {direction} added (unlimited).'
             session.commit()
-        await update.message.reply_text(reply)
-        monitor_trades(user_id)
-    elif state == 'watchlist':
-        with Session() as session:
-            user = session.query(UserData).filter_by(user_id=user_id).first()
+            await update.message.reply_text(reply)
+            monitor_trades(user_id)
+            user.current_state = None
+            session.commit()
+        elif state == 'watchlist':
             if text.startswith('add '):
                 sym = text.split('add ')[1]
                 user.watchlist.append(sym)
@@ -333,10 +336,10 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
             else:
                 reply = 'دستور نامعتبر.' if lang == 'fa' else 'Invalid command.'
             session.commit()
-        await update.message.reply_text(reply)
-    elif state == 'settings':
-        with Session() as session:
-            user = session.query(UserData).filter_by(user_id=user_id).first()
+            await update.message.reply_text(reply)
+            user.current_state = None
+            session.commit()
+        elif state == 'settings':
             if text.startswith('lang '):
                 new_lang = text.split('lang ')[1].lower()
                 if new_lang in ['fa', 'en']:
@@ -347,8 +350,9 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
             else:
                 reply = 'تنظیمات اعمال شد (شبیه‌سازی).' if lang == 'fa' else 'Settings applied (simulated).'
             session.commit()
-        await update.message.reply_text(reply)
-    context.user_data.pop('state', None)  # پاک کردن state بعد عملیات
+            await update.message.reply_text(reply)
+            user.current_state = None
+            session.commit()
 
 async def stats(update: Update, context: CallbackContext) -> None:
     logger.debug("دستور /stats دریافت شد")
