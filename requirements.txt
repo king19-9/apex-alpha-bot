@@ -11,7 +11,7 @@ redis
 flask
 ccxt
 nltk
-tensorflow
 backtrader
-stable-baselines3
 gym
+# tensorflow  # کامنت برای build اولیه؛ بعد uncomment و redeploy کنید
+# stable-baselines3  # کامنت برای build اولیه؛ بعد uncomment و redeploy کنید
