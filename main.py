@@ -400,7 +400,7 @@ def main():
     # شروع اسکنر (بهبود 3)
     threading.Thread(target=background_scanner, daemon=True).start()
 
-    # تنظیم تلگرام با webhook (برای Railway)
+    # تنظیم تلگرام
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
@@ -408,12 +408,15 @@ def main():
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("lang", lambda update, context: text_handler(update, context)))  # برای تغییر زبان
 
-    # webhook برای Railway (سرعت بیشتر)
-    PORT = int(os.environ.get('PORT', 8443))
-    application.run_webhook(listen='0.0.0.0', port=PORT, url_path=TOKEN, webhook_url=f'https://your-railway-app.up.railway.app/{TOKEN}')  # URL رو با نام پروژه جایگزین کنید
-
-    # اگر webhook نمی‌خواهید، این رو uncomment کنید:
-    # application.run_polling()
+    # چک اگر webhook فعال باشه (اگر USE_WEBHOOK = true در Variables)
+    if os.environ.get('USE_WEBHOOK', 'false').lower() == 'true':
+        PORT = int(os.environ.get('PORT', 8443))
+        WEBHOOK_URL = os.environ.get('WEBHOOK_URL', f'https://your-railway-app.up.railway.app/{TOKEN}')  # در Variables تنظیم کنید
+        application.run_webhook(listen='0.0.0.0', port=PORT, url_path=TOKEN, webhook_url=WEBHOOK_URL)
+        logger.info("بات با webhook آنلاین شد")
+    else:
+        application.run_polling()
+        logger.info("بات با polling آنلاین شد")
 
 if __name__ == '__main__':
     main()
