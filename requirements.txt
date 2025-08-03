@@ -9,3 +9,10 @@ sqlalchemy
 psycopg2-binary  # برای PostgreSQL
 redis
 flask
+pip install ccxt nltk tensorflow backtrader stable-baselines3 gym
+ccxt
+nltk
+tensorflow
+backtrader
+stable-baselines3
+gym
