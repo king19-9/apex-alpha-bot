@@ -3,12 +3,11 @@ import threading
 import time
 import random
 import sys
-import os  # برای خواندن محیط
+import os
 from datetime import datetime
 from typing import Dict, List
-from urllib.parse import urlparse
 
-from apscheduler.schedulers.background import BackgroundScheduler  # بهبود 3: بهینه‌سازی عملکرد
+from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
 
@@ -35,18 +34,18 @@ import redis
 # بهبود 4: ویژگی‌های اضافی - داشبورد با Flask
 from flask import Flask, jsonify
 
-# تنظیمات logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# تنظیمات logging (بیشتر برای دیباگ)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # تنظیمات APIها و کلیدها (از محیط بخوانید؛ در Railway تنظیم کنید)
 NEWS_API_KEY = os.environ.get('NEWS_API_KEY', 'YOUR_NEWSAPI_KEY_HERE')
 TOKEN = os.environ.get('TELEGRAM_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN_HERE')
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
-DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/mydb')  # پیش‌فرض محلی؛ در Railway از Variables می‌خواند
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/mydb')  # پیش‌فرض محلی
 
 # بهبود 2: تنظیم PostgreSQL
-engine = create_engine(DATABASE_URL, echo=True)  # echo=True برای log اتصال
+engine = create_engine(DATABASE_URL, echo=True)
 Base = declarative_base()
 Session = sessionmaker(bind=engine)
 
@@ -72,7 +71,7 @@ def flask_stats():
     return jsonify({'history': eval(history.decode())})
 
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)  # PORT از محیط
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
 
 # استراتژی‌های ممکن
 STRATEGIES = [
@@ -84,7 +83,6 @@ STRATEGIES = [
 ]
 
 def train_ml_model(data: pd.DataFrame) -> RandomForestClassifier:
-    """بهبود 1: مدل ML واقعی برای پیش‌بینی."""
     try:
         data['return'] = data['Close'].pct_change()
         data['target'] = np.where(data['return'] > 0, 1, 0)
@@ -101,7 +99,6 @@ def train_ml_model(data: pd.DataFrame) -> RandomForestClassifier:
         return None
 
 def select_best_strategy(symbol: str) -> Dict:
-    """بک‌تستینگ با ML واقعی (بهبود 1)."""
     try:
         data = yf.download(symbol, period='1y')
         model = train_ml_model(data)
@@ -110,7 +107,6 @@ def select_best_strategy(symbol: str) -> Dict:
         best_strategy = None
         best_win_rate = 0
         for strat in STRATEGIES:
-            # پیش‌بینی ساده با ML (می‌توانید پیچیده‌تر کنید)
             recent_data = data[['Open', 'High', 'Low', 'Close', 'Volume']][-100:]
             pred = model.predict(recent_data)
             win_rate = (pred == 1).mean()
@@ -123,7 +119,7 @@ def select_best_strategy(symbol: str) -> Dict:
         return {'strategy': STRATEGIES[0], 'win_rate': 0.5}
 
 def get_deep_analysis(symbol: str) -> str:
-    """تحلیل عمیق یک نماد."""
+    logger.debug(f"شروع تحلیل برای {symbol}")
     try:
         best = select_best_strategy(symbol)
         ticker = yf.Ticker(symbol)
@@ -136,7 +132,7 @@ def get_deep_analysis(symbol: str) -> str:
         news_summary = "\n".join([art['title'] for art in articles['articles']])
         data = yf.download(symbol, period='1mo')
         rsi = data['Close'].pct_change().rolling(14).std().mean()
-        confidence = random.uniform(0.6, 0.95)  # شبیه‌سازی؛ با ML واقعی جایگزین کنید
+        confidence = random.uniform(0.6, 0.95)
         if confidence > 0.8:
             signal = f"سیگنال خرید: ورود در {price:.2f}, TP1: {price*1.05:.2f}, SL: {price*0.95:.2f}, اطمینان: {confidence*100:.2f}%"
         else:
@@ -149,13 +145,14 @@ def get_deep_analysis(symbol: str) -> str:
 ۴. تحلیل فاندامنتال: نرخ بهره Fed: {fed_rate}, اخبار: {news_summary}
 ۵. پیشنهاد معامله: {signal}
 """
+        logger.debug(f"تحلیل کامل شد برای {symbol}")
         return report
     except Exception as e:
         logger.error(f"خطا در تحلیل عمیق: {str(e)}")
         return f"خطا در تحلیل: {str(e)}"
 
 def scan_signals(user_id: int) -> List[Dict]:
-    """اسکن ۲۴/۷ برای سیگنال‌ها (نامحدود، بهبود 3 و 6)."""
+    logger.debug(f"شروع اسکن سیگنال برای کاربر {user_id}")
     with Session() as session:
         user = session.query(UserData).filter_by(user_id=user_id).first()
         if not user:
@@ -171,18 +168,19 @@ def scan_signals(user_id: int) -> List[Dict]:
         history = eval(redis_client.get('signal_history') or b'[]'.decode())
         history.append({'symbol': symbol, 'level': level, 'profit': random.uniform(-5, 10), 'date': str(datetime.now())})
         redis_client.set('signal_history', str(history))
-        time.sleep(1)  # تاخیر برای rate limit (نامحدود اما ایمن)
+        time.sleep(1)
+    logger.debug(f"اسکن سیگنال کامل شد برای کاربر {user_id}")
     return signals
 
 # بهبود 3: APScheduler برای اسکنر پس‌زمینه
 scheduler = BackgroundScheduler()
 def background_scanner():
+    logger.debug("شروع اسکن پس‌زمینه")
     with Session() as session:
         users = session.query(UserData).all()
         for user in users:
             if user.notifications_enabled:
                 signals = scan_signals(user.user_id)
-                # ارسال نوتیفیکیشن (در اینجا log می‌کنم؛ در هندلر واقعی ارسال کنید)
                 for sig in signals:
                     if sig['level'] == 'طلایی':
                         logger.info(f"سیگنال طلایی برای {user.user_id}: {sig['symbol']}")
@@ -190,22 +188,22 @@ scheduler.add_job(background_scanner, 'interval', minutes=5)
 scheduler.start()
 
 def monitor_trades(user_id: int):
-    """پایش نامحدود معاملات باز (بهبود 3)."""
     def monitor_job():
+        logger.debug(f"شروع پایش برای کاربر {user_id}")
         with Session() as session:
             user = session.query(UserData).filter_by(user_id=user_id).first()
             if not user or not user.monitored_trades:
                 return
             for trade in user.monitored_trades:
                 report = get_deep_analysis(trade['symbol'])
-                # چک تضاد ساده (گسترش دهید)
                 if (trade['direction'] == 'Long' and 'SELL' in report) or (trade['direction'] == 'Short' and 'BUY' in report):
                     logger.info(f"هشدار برای {user_id}: {trade['symbol']} - گزارش: {report}")
-                time.sleep(1)  # برای نامحدود بودن ایمن
+                time.sleep(1)
     scheduler.add_job(monitor_job, 'interval', minutes=5, id=f'monitor_{user_id}')
 
 # هندلرهای تلگرام (با پشتیبانی زبان - بهبود 4)
 async def start(update: Update, context: CallbackContext) -> None:
+    logger.debug("دستور /start دریافت شد")
     user_id = update.message.from_user.id
     with Session() as session:
         user = session.query(UserData).filter_by(user_id=user_id).first()
@@ -214,7 +212,6 @@ async def start(update: Update, context: CallbackContext) -> None:
             session.add(user)
             session.commit()
         lang = user.language
-    # متن بر اساس زبان
     menu_text = 'منوی اصلی (گزینه‌های ۱ تا ۶):' if lang == 'fa' else 'Main Menu (Options 1 to 6):'
     keyboard = [
         [InlineKeyboardButton("1. 🔬 تحلیل عمیق یک نماد" if lang == 'fa' else "1. Deep Analysis", callback_data='analyze')],
@@ -233,6 +230,8 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
+    logger.debug(f"دکمه زده شد: {data} توسط کاربر {user_id}")
+    await query.answer()  # تأیید دکمه (جلوگیری از freeze)
     with Session() as session:
         user = session.query(UserData).filter_by(user_id=user_id).first()
         lang = user.language if user else 'fa'
@@ -287,6 +286,7 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
     text = update.message.text.strip()
     state = context.user_data.get('state')
+    logger.debug(f"پیام متن دریافت شد از کاربر {user_id}: {text}, state: {state}")
     with Session() as session:
         user = session.query(UserData).filter_by(user_id=user_id).first()
         if not user:
@@ -303,7 +303,7 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
             user = session.query(UserData).filter_by(user_id=user_id).first()
             if text.lower() == 'all':
                 for sym in user.watchlist:
-                    user.monitored_trades.append({'symbol': sym, 'direction': 'Long'})  # پیش‌فرض Long
+                    user.monitored_trades.append({'symbol': sym, 'direction': 'Long'})
                 reply = f'پایش همه {len(user.watchlist)} نماد شروع شد (نامحدود).' if lang == 'fa' else f'Monitoring all {len(user.watchlist)} symbols started (unlimited).'
             else:
                 parts = text.split()
@@ -313,7 +313,7 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
                 reply = f'پایش {symbol} {direction} اضافه شد (نامحدود).' if lang == 'fa' else f'Monitoring {symbol} {direction} added (unlimited).'
             session.commit()
         await update.message.reply_text(reply)
-        monitor_trades(user_id)  # شروع پایش
+        monitor_trades(user_id)
     elif state == 'watchlist':
         with Session() as session:
             user = session.query(UserData).filter_by(user_id=user_id).first()
@@ -348,9 +348,10 @@ async def text_handler(update: Update, context: CallbackContext) -> None:
                 reply = 'تنظیمات اعمال شد (شبیه‌سازی).' if lang == 'fa' else 'Settings applied (simulated).'
             session.commit()
         await update.message.reply_text(reply)
-    context.user_data.pop('state', None)
+    context.user_data.pop('state', None)  # پاک کردن state بعد عملیات
 
 async def stats(update: Update, context: CallbackContext) -> None:
+    logger.debug("دستور /stats دریافت شد")
     history = eval(redis_client.get('signal_history') or b'[]'.decode())
     total_signals = len(history)
     win_rate = sum(1 for s in history if s['profit'] > 0) / total_signals if total_signals > 0 else 0
@@ -369,6 +370,7 @@ async def stats(update: Update, context: CallbackContext) -> None:
 
 # بهبود 7: تابع تست
 def run_tests():
+    logger.info("شروع تست‌ها")
     # تست تحلیل
     mock_symbol = 'BTC-USD'
     report = get_deep_analysis(mock_symbol)
@@ -398,7 +400,7 @@ def main():
     # شروع اسکنر (بهبود 3)
     threading.Thread(target=background_scanner, daemon=True).start()
 
-    # تنظیم تلگرام (برای وب‌هوک، اگر می‌خواهید سرعت بیشتر، فعال کنید)
+    # تنظیم تلگرام با webhook (برای Railway)
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
@@ -406,12 +408,12 @@ def main():
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("lang", lambda update, context: text_handler(update, context)))  # برای تغییر زبان
 
-    # برای polling (ساده)
-    application.run_polling()
+    # webhook برای Railway (سرعت بیشتر)
+    PORT = int(os.environ.get('PORT', 8443))
+    application.run_webhook(listen='0.0.0.0', port=PORT, url_path=TOKEN, webhook_url=f'https://your-railway-app.up.railway.app/{TOKEN}')  # URL رو با نام پروژه جایگزین کنید
 
-    # برای webhook (بهبود 4 - سرعت بیشتر؛ در Railway فعال کنید)
-    # PORT = int(os.environ.get('PORT', 8443))
-    # application.run_webhook(listen='0.0.0.0', port=PORT, url_path=TOKEN, webhook_url='https://your-railway-app.up.railway.app/' + TOKEN)
+    # اگر webhook نمی‌خواهید، این رو uncomment کنید:
+    # application.run_polling()
 
 if __name__ == '__main__':
     main()
