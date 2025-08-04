@@ -2,26 +2,29 @@ import os
 import logging
 import time
 import json
+import requests
+import joblib
+import numpy as np
+import yfinance as yf
+import tradingview_ta
+import investpy
+import nltk
+from keras.models import load_model
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 )
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, JSON, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
 import redis
 from apscheduler.schedulers.background import BackgroundScheduler
-
-# تحلیل و ML (نمونه اولیه)
-import yfinance as yf
-import ccxt
-import tradingview_ta
-import investpy
-import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
 # --- تنظیمات ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")  # این خط اصلاح شد
+POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL")
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 DEFAULT_LANG = "fa"
 
 # --- لاگ ---
@@ -54,18 +57,207 @@ Base.metadata.create_all(engine)
 # --- Redis ---
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
-# --- Scheduler ---
+# --- ML Models ---
+rf_model = joblib.load("rf_model.pkl")
+lstm_model = load_model("lstm_model.h5")
+lstm_scaler = joblib.load("lstm_scaler.pkl")
+
+# --- NLTK ---
+nltk.download('vader_lexicon')
+analyzer = SentimentIntensityAnalyzer()
+
+# --- تحلیل تکنیکال و فاندامنتال ---
+def get_price(symbol):
+    try:
+        data = yf.Ticker(symbol).history(period="1d")
+        return float(data['Close'][-1])
+    except Exception as e:
+        print(f"Error in get_price: {e}")
+        return None
+
+def get_technical(symbol):
+    try:
+        base = symbol.split('-')[0]
+        ta = tradingview_ta.TA_Handler(
+            symbol=base,
+            screener="crypto",
+            exchange="BINANCE",
+            interval=tradingview_ta.Interval.INTERVAL_1_HOUR
+        )
+        analysis = ta.get_analysis()
+        return {
+            "RECOMMENDATION": analysis.summary.get("RECOMMENDATION", "NEUTRAL"),
+            "BUY": analysis.summary.get("BUY", 0),
+            "SELL": analysis.summary.get("SELL", 0),
+            "NEUTRAL": analysis.summary.get("NEUTRAL", 0),
+            "oscillators": analysis.oscillators,
+            "moving_averages": analysis.moving_averages
+        }
+    except Exception as e:
+        print(f"Error in get_technical: {e}")
+        return {}
+
+def get_fundamental(symbol):
+    try:
+        info = yf.Ticker(symbol).info
+        try:
+            base = symbol.split('-')[0]
+            fund = investpy.get_crypto_historical_data(crypto=base, from_date="01/01/2023", to_date="01/02/2023")
+            fund_info = "Available"
+        except Exception:
+            fund_info = "N/A"
+        return {
+            "marketCap": info.get("marketCap", "N/A"),
+            "volume": info.get("volume", "N/A"),
+            "peRatio": info.get("trailingPE", "N/A"),
+            "dividendYield": info.get("dividendYield", "N/A"),
+            "fund_info": fund_info
+        }
+    except Exception as e:
+        print(f"Error in get_fundamental: {e}")
+        return {}
+
+def deep_analysis(symbol):
+    price = get_price(symbol)
+    tech = get_technical(symbol)
+    fund = get_fundamental(symbol)
+    return {
+        "symbol": symbol,
+        "price": price,
+        "tech": tech,
+        "fund": fund
+    }
+
+# --- تحلیل احساسات اخبار ---
+def get_news_sentiment(symbol, newsapi_key):
+    url = f"https://newsapi.org/v2/everything?q={symbol}&apiKey={newsapi_key}&language=en"
+    r = requests.get(url)
+    data = r.json()
+    scores = []
+    for article in data.get("articles", []):
+        text = (article.get("title") or "") + " " + (article.get("description") or "")
+        score = analyzer.polarity_scores(text)
+        scores.append(score["compound"])
+    if not scores:
+        return {"sentiment": "Neutral", "score": 0}
+    avg = sum(scores) / len(scores)
+    if avg > 0.2:
+        sentiment = "Positive"
+    elif avg < -0.2:
+        sentiment = "Negative"
+    else:
+        sentiment = "Neutral"
+    return {"sentiment": sentiment, "score": avg}
+
+# --- ML Inference ---
+def rf_predict(ma10, ma50, rsi):
+    X = np.array([[ma10, ma50, rsi]])
+    pred = rf_model.predict(X)[0]
+    return "Buy" if pred == 1 else "Sell"
+
+def lstm_predict(prices):
+    scaled = lstm_scaler.transform(np.array(prices).reshape(-1, 1))
+    X = np.array([scaled.flatten()])
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+    pred = lstm_model.predict(X)
+    pred_price = lstm_scaler.inverse_transform(pred)[0][0]
+    return pred_price
+
+# --- سیگنال‌دهی ترکیبی ---
+def generate_advanced_signal(symbol, newsapi_key):
+    analysis = deep_analysis(symbol)
+    price = analysis["price"]
+    tech = analysis["tech"]
+    fund = analysis["fund"]
+
+    sentiment_result = get_news_sentiment(symbol, newsapi_key)
+    sentiment = sentiment_result["sentiment"]
+    sentiment_score = sentiment_result["score"]
+
+    data = yf.Ticker(symbol).history(period="60d")
+    ma10 = data['Close'].rolling(10).mean().iloc[-1]
+    ma50 = data['Close'].rolling(50).mean().iloc[-1]
+    rsi = (100 - (100 / (1 + data['Close'].pct_change().rolling(14).mean()))).iloc[-1]
+    rf_signal = rf_predict(ma10, ma50, rsi)
+    prices = data['Close'].values[-10:]
+    lstm_price = lstm_predict(prices)
+    lstm_trend = "Up" if lstm_price > price else "Down"
+
+    votes = 0
+    if tech.get("RECOMMENDATION", "NEUTRAL") == "BUY":
+        votes += 1
+    elif tech.get("RECOMMENDATION", "NEUTRAL") == "SELL":
+        votes -= 1
+    if rf_signal == "Buy":
+        votes += 1
+    else:
+        votes -= 1
+    if lstm_trend == "Up":
+        votes += 1
+    else:
+        votes -= 1
+    if sentiment == "Positive":
+        votes += 1
+    elif sentiment == "Negative":
+        votes -= 1
+
+    if votes >= 2:
+        final_signal = "Strong Buy"
+    elif votes == 1:
+        final_signal = "Buy"
+    elif votes == 0:
+        final_signal = "Neutral"
+    elif votes == -1:
+        final_signal = "Sell"
+    else:
+        final_signal = "Strong Sell"
+
+    winrate = int(80 + 10 * (votes / 4))
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "tech": tech,
+        "fund": fund,
+        "sentiment": sentiment,
+        "sentiment_score": sentiment_score,
+        "rf_signal": rf_signal,
+        "lstm_trend": lstm_trend,
+        "lstm_price": lstm_price,
+        "final_signal": final_signal,
+        "winrate": winrate
+    }
+
+# --- پایش معاملات و آمار ---
 scheduler = BackgroundScheduler()
+
+def monitor_trades():
+    session = Session()
+    trades = session.query(Trade).filter_by(active=True).all()
+    for trade in trades:
+        signal = generate_advanced_signal(trade.symbol, NEWSAPI_KEY)
+        if (trade.direction == "Long" and signal['final_signal'] in ["Sell", "Strong Sell"]) or \
+           (trade.direction == "Short" and signal['final_signal'] in ["Buy", "Strong Buy"]):
+            logger.warning(f"ALERT: {trade.symbol} {trade.direction} conflict with signal {signal['final_signal']}!")
+    session.close()
+
+def update_stats(signal):
+    redis_client.incr("signals_total")
+    if signal["final_signal"] in ["Strong Buy", "Strong Sell"]:
+        redis_client.incr("signals_gold")
+    elif signal["final_signal"] in ["Buy", "Sell"]:
+        redis_client.incr("signals_silver")
+
+scheduler.add_job(monitor_trades, 'interval', minutes=5)
 scheduler.start()
 
-# --- Helper: زبان ---
+# --- پیام‌های چندزبانه ---
 def t(msg, lang):
-    # پیام‌های چندزبانه (نمونه)
     fa = {
         "main_menu": "منوی اصلی:\n1. تحلیل عمیق\n2. سیگنال نقره‌ای\n3. نوتیف طلایی\n4. پایش معامله\n5. واچ‌لیست\n6. تنظیمات",
         "send_symbol": "نماد را ارسال کنید (مثلاً BTC-USD):",
         "invalid_symbol": "نماد نامعتبر است.",
-        "analysis_report": "گزارش تحلیل {symbol}:\nقیمت: {price}\nاستراتژی: {strategy} (WinRate: {winrate}%)\nتکنیکال: {tech}\nفاندامنتال: {fund}\nسیگنال: {signal}\nاحساسات: {sentiment}",
+        "analysis_report": "گزارش تحلیل {symbol}:\nقیمت: {price}\nتکنیکال: {tech}\nفاندامنتال: {fund}\nسیگنال ML: {rf_signal} | LSTM: {lstm_trend} ({lstm_price:.2f})\nسیگنال نهایی: {final_signal} (WinRate: {winrate}%)\nاحساسات: {sentiment} ({sentiment_score:.2f})",
         "done": "انجام شد.",
         "add_watchlist": "نماد به واچ‌لیست افزوده شد.",
         "remove_watchlist": "نماد حذف شد.",
@@ -77,7 +269,7 @@ def t(msg, lang):
         "main_menu": "Main Menu:\n1. Deep Analysis\n2. Silver Signals\n3. Golden Notif\n4. Trade Monitor\n5. Watchlist\n6. Settings",
         "send_symbol": "Send symbol (e.g. BTC-USD):",
         "invalid_symbol": "Invalid symbol.",
-        "analysis_report": "Analysis for {symbol}:\nPrice: {price}\nStrategy: {strategy} (WinRate: {winrate}%)\nTechnical: {tech}\nFundamental: {fund}\nSignal: {signal}\nSentiment: {sentiment}",
+        "analysis_report": "Analysis for {symbol}:\nPrice: {price}\nTechnical: {tech}\nFundamental: {fund}\nML Signal: {rf_signal} | LSTM: {lstm_trend} ({lstm_price:.2f})\nFinal Signal: {final_signal} (WinRate: {winrate}%)\nSentiment: {sentiment} ({sentiment_score:.2f})",
         "done": "Done.",
         "add_watchlist": "Symbol added to watchlist.",
         "remove_watchlist": "Symbol removed.",
@@ -87,82 +279,7 @@ def t(msg, lang):
     }
     return fa[msg] if lang == "fa" else en[msg]
 
-# --- تحلیل عمیق (نمونه اولیه) ---
-def get_deep_analysis(symbol):
-    # داده قیمت
-    try:
-        data = yf.Ticker(symbol).history(period="1mo")
-        price = data['Close'][-1]
-    except Exception:
-        return None
-    # تحلیل تکنیکال (نمونه)
-    try:
-        ta = tradingview_ta.TA_Handler(
-            symbol=symbol.split('-')[0],
-            screener="crypto",
-            exchange="BINANCE",
-            interval=tradingview_ta.Interval.INTERVAL_1_HOUR
-        )
-        tech = ta.get_analysis().summary
-    except Exception:
-        tech = {}
-    # تحلیل فاندامنتال (نمونه)
-    try:
-        fund = investpy.get_crypto_historical_data(crypto=symbol.split('-')[0], from_date="01/01/2023", to_date="01/02/2023")
-        fund = "OK"
-    except Exception:
-        fund = "N/A"
-    # تحلیل احساسات (نمونه)
-    sentiment = "Neutral"
-    # مدل ML (نمونه اولیه)
-    strategy = "RF+LSTM"
-    winrate = 87
-    signal = "Buy" if price % 2 == 0 else "Sell"
-    return {
-        "symbol": symbol,
-        "price": price,
-        "strategy": strategy,
-        "winrate": winrate,
-        "tech": tech,
-        "fund": fund,
-        "signal": signal,
-        "sentiment": sentiment
-    }
-
-# --- سیگنال نقره‌ای (نمونه) ---
-def scan_signals(watchlist):
-    signals = []
-    for symbol in watchlist:
-        analysis = get_deep_analysis(symbol)
-        if analysis and 65 <= analysis['winrate'] < 80:
-            signals.append(analysis)
-    return signals
-
-# --- سیگنال طلایی (نمونه) ---
-def scan_golden_signals(watchlist):
-    signals = []
-    for symbol in watchlist:
-        analysis = get_deep_analysis(symbol)
-        if analysis and analysis['winrate'] >= 80:
-            signals.append(analysis)
-    return signals
-
-# --- پایش معاملات ---
-def monitor_trades():
-    session = Session()
-    trades = session.query(Trade).filter_by(active=True).all()
-    for trade in trades:
-        analysis = get_deep_analysis(trade.symbol)
-        if analysis:
-            # اگر سیگنال مخالف جهت معامله بود، هشدار (نمونه)
-            if (trade.direction == "Long" and analysis['signal'] == "Sell") or \
-               (trade.direction == "Short" and analysis['signal'] == "Buy"):
-                logger.warning(f"Trade alert for {trade.symbol} ({trade.direction})!")
-    session.close()
-
-scheduler.add_job(monitor_trades, 'interval', minutes=5)
-
-# --- هندلرها ---
+# --- هندلرهای ربات ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     user = session.query(User).filter_by(user_id=update.effective_user.id).first()
@@ -193,8 +310,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.commit()
         await query.message.reply_text(t("send_symbol", lang))
     elif query.data == "silver":
-        signals = scan_signals(user.watchlist)
-        msg = "\n".join([f"{s['symbol']}: {s['signal']} ({s['winrate']}%)" for s in signals]) or "No signals."
+        signals = []
+        for symbol in user.watchlist:
+            sig = generate_advanced_signal(symbol, NEWSAPI_KEY)
+            if 65 <= sig['winrate'] < 80:
+                signals.append(sig)
+        msg = "\n".join([f"{s['symbol']}: {s['final_signal']} ({s['winrate']}%)" for s in signals]) or "No signals."
         await query.message.reply_text(msg)
     elif query.data == "golden":
         user.notifications_enabled = not user.notifications_enabled
@@ -220,13 +341,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = user.language
     if user.state == "analyze":
         symbol = update.message.text.strip().upper()
-        analysis = get_deep_analysis(symbol)
-        if not analysis:
+        sig = generate_advanced_signal(symbol, NEWSAPI_KEY)
+        if not sig or not sig["price"]:
             await update.message.reply_text(t("invalid_symbol", lang))
         else:
             await update.message.reply_text(
-                t("analysis_report", lang).format(**analysis)
+                t("analysis_report", lang).format(**sig)
             )
+            update_stats(sig)
         user.state = None
         session.commit()
     elif user.state == "monitor":
@@ -274,7 +396,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session.close()
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # نمونه آماری
     total = int(redis_client.get("signals_total") or 0)
     gold = int(redis_client.get("signals_gold") or 0)
     silver = int(redis_client.get("signals_silver") or 0)
@@ -287,7 +408,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     session.close()
 
-# --- راه‌اندازی ربات ---
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
