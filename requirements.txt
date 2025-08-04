@@ -1,17 +1,10 @@
-python-telegram-bot
-yfinance
-tradingview-ta
-investpy
-newsapi-python
-apscheduler
-scikit-learn
-sqlalchemy
-psycopg2-binary
-redis
-flask
-ccxt
-nltk
-backtrader
-gym
-# tensorflow  # کامنت برای build اولیه
-# stable-baselines3  # کامنت برای build اولیه
+python-telegram-bot[ext]>=20.0
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+redis>=5.0
+APScheduler>=3.10
+yfinance>=0.2
+ccxt>=4.0
+tradingview_ta>=3.3
+investpy>=1.0
+nltk>=3.8
