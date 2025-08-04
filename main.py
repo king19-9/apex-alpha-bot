@@ -7,8 +7,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 )
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, JSON, Float
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 import redis
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -21,7 +20,7 @@ import nltk
 
 # --- تنظیمات ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-POSTGRES_URL = os.getenv("POSTGRES_URL")
+POSTGRES_URL = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")  # این خط اصلاح شد
 REDIS_URL = os.getenv("REDIS_URL")
 DEFAULT_LANG = "fa"
 
