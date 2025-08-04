@@ -13,5 +13,5 @@ ccxt
 nltk
 backtrader
 gym
-# tensorflow  # کامنت برای build اولیه؛ بعد uncomment و redeploy کنید
-# stable-baselines3  # کامنت برای build اولیه؛ بعد uncomment و redeploy کنید
+# tensorflow  # کامنت برای build اولیه
+# stable-baselines3  # کامنت برای build اولیه
