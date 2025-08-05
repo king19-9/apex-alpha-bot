@@ -9,7 +9,7 @@ import numpy as np
 from keras.models import load_model
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # --- NLTK و ترجمه ---
 nltk.download('vader_lexicon')
 analyzer = SentimentIntensityAnalyzer()
-translator = Translator()
 
 # --- مدل‌های ML ---
 rf_model = joblib.load("rf_model.pkl")
@@ -131,8 +130,8 @@ def get_news_sentiment(symbol, newsapi_key):
             score = analyzer.polarity_scores(text)
             scores.append(score["compound"])
             try:
-                fa_title = translator.translate(article.get("title", ""), dest='fa').text
-                fa_desc = translator.translate(article.get("description", ""), dest='fa').text
+                fa_title = GoogleTranslator(source='auto', target='fa').translate(article.get("title", ""))
+                fa_desc = GoogleTranslator(source='auto', target='fa').translate(article.get("description", ""))
                 fa_news.append(f"عنوان: {fa_title}\nتوضیح: {fa_desc}")
             except:
                 pass
