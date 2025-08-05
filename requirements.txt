@@ -5,7 +5,7 @@ yfinance>=0.2
 tradingview_ta>=3.3
 requests>=2.28
 nltk>=3.8
-googletrans==4.0.0rc1
+deep-translator>=1.11
 scikit-learn>=1.2
 keras>=2.11
 tensorflow>=2.11
