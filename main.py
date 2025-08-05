@@ -228,6 +228,45 @@ def generate_advanced_signal(symbol, newsapi_key):
         "winrate": winrate
     }
 
+# --- فرمت خروجی برای تلگرام ---
+def format_analysis_report(sig, lang):
+    tech = sig.get("tech", {})
+    if isinstance(tech, dict):
+        tech_str = "\n".join([f"{k}: {v}" for k, v in tech.items()])
+    else:
+        tech_str = str(tech)
+
+    fund = sig.get("fund", {})
+    if isinstance(fund, dict):
+        fund_str = "\n".join([f"{k}: {v}" for k, v in fund.items()])
+    else:
+        fund_str = str(fund)
+
+    msg = (
+        f"نماد: {sig.get('symbol', '-')}\n"
+        f"قیمت: {sig.get('price', '-')}\n"
+        f"--- تحلیل تکنیکال ---\n{tech_str}\n"
+        f"--- تحلیل فاندامنتال ---\n{fund_str}\n"
+        f"سیگنال ML: {sig.get('rf_signal', '-')}\n"
+        f"LSTM: {sig.get('lstm_trend', '-')} (پیش‌بینی: {sig.get('lstm_price', 0):.2f})\n"
+        f"سیگنال نهایی: {sig.get('final_signal', '-')}\n"
+        f"WinRate: {sig.get('winrate', 0)}%\n"
+        f"احساسات اخبار: {sig.get('sentiment', '-')} (امتیاز: {sig.get('sentiment_score', 0):.2f})"
+    )
+    if lang == "en":
+        msg = (
+            f"Symbol: {sig.get('symbol', '-')}\n"
+            f"Price: {sig.get('price', '-')}\n"
+            f"--- Technical Analysis ---\n{tech_str}\n"
+            f"--- Fundamental Analysis ---\n{fund_str}\n"
+            f"ML Signal: {sig.get('rf_signal', '-')}\n"
+            f"LSTM: {sig.get('lstm_trend', '-')} (Predicted: {sig.get('lstm_price', 0):.2f})\n"
+            f"Final Signal: {sig.get('final_signal', '-')}\n"
+            f"WinRate: {sig.get('winrate', 0)}%\n"
+            f"News Sentiment: {sig.get('sentiment', '-')} (Score: {sig.get('sentiment_score', 0):.2f})"
+        )
+    return msg
+
 # --- پایش معاملات و آمار ---
 scheduler = BackgroundScheduler()
 
@@ -257,7 +296,6 @@ def t(msg, lang):
         "main_menu": "منوی اصلی:\n1. تحلیل عمیق\n2. سیگنال نقره‌ای\n3. نوتیف طلایی\n4. پایش معامله\n5. واچ‌لیست\n6. تنظیمات",
         "send_symbol": "نماد را ارسال کنید (مثلاً BTC-USD):",
         "invalid_symbol": "نماد نامعتبر است.",
-        "analysis_report": "گزارش تحلیل {symbol}:\nقیمت: {price}\nتکنیکال: {tech}\nفاندامنتال: {fund}\nسیگنال ML: {rf_signal} | LSTM: {lstm_trend} ({lstm_price:.2f})\nسیگنال نهایی: {final_signal} (WinRate: {winrate}%)\nاحساسات: {sentiment} ({sentiment_score:.2f})",
         "done": "انجام شد.",
         "add_watchlist": "نماد به واچ‌لیست افزوده شد.",
         "remove_watchlist": "نماد حذف شد.",
@@ -269,7 +307,6 @@ def t(msg, lang):
         "main_menu": "Main Menu:\n1. Deep Analysis\n2. Silver Signals\n3. Golden Notif\n4. Trade Monitor\n5. Watchlist\n6. Settings",
         "send_symbol": "Send symbol (e.g. BTC-USD):",
         "invalid_symbol": "Invalid symbol.",
-        "analysis_report": "Analysis for {symbol}:\nPrice: {price}\nTechnical: {tech}\nFundamental: {fund}\nML Signal: {rf_signal} | LSTM: {lstm_trend} ({lstm_price:.2f})\nFinal Signal: {final_signal} (WinRate: {winrate}%)\nSentiment: {sentiment} ({sentiment_score:.2f})",
         "done": "Done.",
         "add_watchlist": "Symbol added to watchlist.",
         "remove_watchlist": "Symbol removed.",
@@ -345,9 +382,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not sig or not sig["price"]:
             await update.message.reply_text(t("invalid_symbol", lang))
         else:
-            await update.message.reply_text(
-                t("analysis_report", lang).format(**sig)
-            )
+            msg = format_analysis_report(sig, lang)
+            await update.message.reply_text(msg)
             update_stats(sig)
         user.state = None
         session.commit()
