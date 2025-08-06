@@ -55,6 +55,15 @@ except ImportError as e:
     TALIB_AVAILABLE = False
     logger.warning(f"TA-Lib not available: {e}")
 
+# کتابخانه‌های جایگزین برای TA-Lib
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+    logger.info("pandas-ta loaded successfully")
+except ImportError as e:
+    PANDAS_TA_AVAILABLE = False
+    logger.warning(f"pandas-ta not available: {e}")
+
 try:
     import pywt
     PYWT_AVAILABLE = True
@@ -384,15 +393,26 @@ class AdvancedTradingBot:
             atr = self.calculate_atr(data)
             vwap = self.calculate_vwap(data)
             
-            # اندیکاتورهای تالاب در صورت وجود
+            # اندیکاتورهای تالاب با pandas-ta در صورت عدم وجود TA-Lib
             williams_r = None
             cci = None
+            
             if TALIB_AVAILABLE:
                 try:
                     williams_r = talib.WILLR(data['High'], data['Low'], data['Close'], timeperiod=14)
                     cci = talib.CCI(data['High'], data['Low'], data['Close'], timeperiod=14)
                 except Exception as e:
                     logger.error(f"Error calculating TA-Lib indicators: {e}")
+            elif PANDAS_TA_AVAILABLE:
+                try:
+                    # استفاده از pandas-ta به جای TA-Lib
+                    df = data.copy()
+                    df.ta.williams_r(length=14, append=True)
+                    df.ta.cci(length=14, append=True)
+                    williams_r = df['WILLR_14'].values
+                    cci = df['CCI_14'].values
+                except Exception as e:
+                    logger.error(f"Error calculating pandas-ta indicators: {e}")
             
             return {
                 'ichimoku': ichimoku,
