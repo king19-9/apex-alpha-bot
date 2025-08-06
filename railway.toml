@@ -1,8 +1,13 @@
 [build]
-  command = "pip install --upgrade pip && pip install -r requirements.txt"
+  command = "pip install --upgrade pip setuptools wheel && pip install --no-cache-dir -r requirements.txt"
 
 [deploy]
   startCommand = "python main.py"
 
+[build]
+  timeout = 1800 # افزایش زمان ساخت به 30 دقیقه
+
 [env]
   PYTHON_VERSION = "3.11.0"
+  PIP_NO_CACHE_DIR = "1"
+  PIP_DISABLE_PIP_VERSION_CHECK = "1"
