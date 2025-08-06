@@ -115,7 +115,15 @@ except ImportError as e:
 from scipy.signal import find_peaks
 from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
-import seaborn as sns
+
+# مدیریت شرطی برای seaborn
+try:
+    import seaborn as sns
+    SEABORN_AVAILABLE = True
+    logger.info("Seaborn loaded successfully")
+except ImportError as e:
+    SEABORN_AVAILABLE = False
+    logger.warning(f"Seaborn not available: {e}")
 
 class AdvancedTradingBot:
     def __init__(self):
@@ -885,6 +893,8 @@ class AdvancedTradingBot:
             
             # ایجاد نمودار عملکرد
             plt.figure(figsize=(12, 6))
+            if SEABORN_AVAILABLE:
+                sns.set()  # تنظیم استایل seaborn در صورت وجود
             plt.plot(cumulative.index, cumulative.values, label='Cumulative Returns')
             plt.fill_between(cumulative.index, drawdown.values, 0, color='red', alpha=0.3, label='Drawdown')
             plt.title('Performance Chart')
@@ -938,7 +948,7 @@ class AdvancedTradingBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "🤖 *به ربات تریدینگ هوشمند خوش آمدید!*\n\nلطفاً یک گزینه را انتخاب کنید:",
+            "🤖 *به ربات تریدینگ هوشمند خوش آمدید!*\\n\\nلطفاً یک گزینه را انتخاب کنید:",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
@@ -1077,11 +1087,11 @@ class AdvancedTradingBot:
                 logger.error(f"Error analyzing {symbol}: {e}")
         
         if signals:
-            response = "🔥 *سیگنال‌های طلایی (اطمینان >80%):*\n\n"
+            response = "🔥 *سیگنال‌های طلایی (اطمینان >80%):*\\n\\n"
             for sig in signals:
-                response += f"• {sig['symbol']}: {sig['signal']}\n"
-                response += f"  قیمت: {sig['price']:,.2f}\n"
-                response += f"  اطمینان: {sig['score']*100:.1f}%\n\n"
+                response += f"• {sig['symbol']}: {sig['signal']}\\n"
+                response += f"  قیمت: {sig['price']:,.2f}\\n"
+                response += f"  اطمینان: {sig['score']*100:.1f}%\\n\\n"
             
             await query.edit_message_text(response, parse_mode='Markdown')
         else:
@@ -1135,9 +1145,9 @@ class AdvancedTradingBot:
         watchlist = self.get_user_watchlist(user_id)
         
         if watchlist:
-            response = "📋 *واچ‌لیست شما:*\n\n"
+            response = "📋 *واچ‌لیست شما:*\\n\\n"
             for i, symbol in enumerate(watchlist, 1):
-                response += f"{i}. {symbol}\n"
+                response += f"{i}. {symbol}\\n"
         else:
             response = "واچ‌لیست شما خالی است."
         
@@ -1258,27 +1268,29 @@ class AdvancedTradingBot:
             await self.help_command(update, context)
         elif data == 'back_to_main':
             await self.start(update, context)
+
+def main():
+    """تابع اصلی اجرای برنامه"""
+    # ایجاد نمونه از ربات
+    bot = AdvancedTradingBot()
     
-    def run(self):
-        """اجرای ربات"""
-        application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
-        
-        # هندلرها
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CommandHandler("analyze", self.deep_analysis))
-        application.add_handler(CommandHandler("signals", self.golden_signals))
-        application.add_handler(CommandHandler("watchlist", self.watchlist_management))
-        application.add_handler(CommandHandler("performance", self.performance_report))
-        application.add_handler(CommandHandler("settings", self.settings_menu))
-        application.add_handler(CommandHandler("help", self.help_command))
-        
-        application.add_handler(CallbackQueryHandler(self.handle_callback))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_symbol))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_watchlist_action))
-        
-        # اجرای ربات
-        application.run_polling()
+    # تنظیمات تلگرام
+    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+    
+    # افزودن هندلرها
+    application.add_handler(CommandHandler("start", bot.start))
+    application.add_handler(CommandHandler("help", bot.help_command))
+    application.add_handler(CommandHandler("analyze", bot.handle_symbol))
+    application.add_handler(CommandHandler("signals", bot.golden_signals))
+    application.add_handler(CommandHandler("watchlist", bot.watchlist_management))
+    application.add_handler(CommandHandler("performance", bot.performance_report))
+    application.add_handler(CommandHandler("settings", bot.settings_menu))
+    application.add_handler(CallbackQueryHandler(bot.handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_symbol))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_watchlist_action))
+    
+    # اجرای ربات
+    application.run_polling()
 
 if __name__ == '__main__':
-    bot = AdvancedTradingBot()
-    bot.run()
+    main()
