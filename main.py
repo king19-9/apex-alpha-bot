@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# بررسی و وارد کردن کتابخانه‌های سنگین به صورت شرطی
+# وارد کردن کتابخانه‌ها به صورت شرطی
 try:
     import torch
     import transformers
@@ -46,7 +46,6 @@ except ImportError as e:
     TF_AVAILABLE = False
     logger.warning(f"TensorFlow not available: {e}")
 
-# کتابخانه‌های دیگر
 try:
     import talib
     TALIB_AVAILABLE = True
@@ -55,7 +54,6 @@ except ImportError as e:
     TALIB_AVAILABLE = False
     logger.warning(f"TA-Lib not available: {e}")
 
-# کتابخانه‌های جایگزین برای TA-Lib
 try:
     import pandas_ta as ta
     PANDAS_TA_AVAILABLE = True
@@ -72,6 +70,14 @@ except ImportError as e:
     PYWT_AVAILABLE = False
     logger.warning(f"PyWavelets not available: {e}")
 
+try:
+    import lightgbm as lgb
+    LIGHTGBM_AVAILABLE = True
+    logger.info("LightGBM loaded successfully")
+except ImportError as e:
+    LIGHTGBM_AVAILABLE = False
+    logger.warning(f"LightGBM not available: {e}")
+
 # کتابخانه‌های یادگیری ماشین
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression
@@ -80,10 +86,30 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-import xgboost as xgb
-import lightgbm as lgb
-from prophet import Prophet
-from statsmodels.tsa.arima.model import ARIMA
+
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+    logger.info("XGBoost loaded successfully")
+except ImportError as e:
+    XGBOOST_AVAILABLE = False
+    logger.warning(f"XGBoost not available: {e}")
+
+try:
+    from prophet import Prophet
+    PROPHET_AVAILABLE = True
+    logger.info("Prophet loaded successfully")
+except ImportError as e:
+    PROPHET_AVAILABLE = False
+    logger.warning(f"Prophet not available: {e}")
+
+try:
+    from statsmodels.tsa.arima.model import ARIMA
+    STATSMODELS_AVAILABLE = True
+    logger.info("Statsmodels loaded successfully")
+except ImportError as e:
+    STATSMODELS_AVAILABLE = False
+    logger.warning(f"Statsmodels not available: {e}")
 
 # کتابخانه‌های تحلیل و مصورسازی
 from scipy.signal import find_peaks
@@ -197,14 +223,21 @@ class AdvancedTradingBot:
         """مقداردهی اولیه مدل‌های تحلیل"""
         models = {
             'random_forest': RandomForestRegressor(n_estimators=100, random_state=42),
-            'xgboost': xgb.XGBRegressor(n_estimators=100, random_state=42),
-            'lightgbm': lgb.LGBMRegressor(n_estimators=100, random_state=42),
             'gradient_boosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
             'svm': SVR(kernel='rbf', C=50, gamma=0.1),
             'knn': KNeighborsRegressor(n_neighbors=5),
             'linear_regression': LinearRegression(),
-            'prophet': Prophet(),
         }
+        
+        # اضافه کردن مدل‌های موجود
+        if XGBOOST_AVAILABLE:
+            models['xgboost'] = xgb.XGBRegressor(n_estimators=100, random_state=42)
+        
+        if LIGHTGBM_AVAILABLE:
+            models['lightgbm'] = lgb.LGBMRegressor(n_estimators=100, random_state=42)
+        
+        if PROPHET_AVAILABLE:
+            models['prophet'] = Prophet()
         
         # اضافه کردن مدل‌های عمیق در صورت وجود
         if TF_AVAILABLE:
