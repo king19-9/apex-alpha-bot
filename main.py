@@ -1,849 +1,1126 @@
+
 import os
 import logging
 import asyncio
 import json
-import time
-import random
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import ccxt
-import redis
-import psycopg2
+import sqlite3
 from datetime import datetime, timedelta
+import pytz
+import io
+import base64
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-    ConversationHandler,
-)
-from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-from ta.trend import IchimokuIndicator
-from ta.volatility import AverageTrueRange
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from dotenv import load_dotenv
 
-# تنظیمات اولیه
+load_dotenv()
+
+# تنظیمات لاگینگ
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# متغیرهای محیطی
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-DB_URL = os.getenv("DATABASE_URL")
-REDIS_URL = os.getenv("REDIS_URL")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+# بررسی و وارد کردن کتابخانه‌های سنگین به صورت شرطی
+try:
+    import torch
+    import transformers
+    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    logger.warning("PyTorch or Transformers not available. Some features will be disabled.")
 
-# اتصال به پایگاه داده
-conn = psycopg2.connect(DB_URL)
-cursor = conn.cursor()
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, GRU, Dense, Dropout
+    from tensorflow.keras.optimizers import Adam
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+    logger.warning("TensorFlow not available. Some features will be disabled.")
 
-# اتصال به Redis
-r = redis.Redis.from_url(REDIS_URL)
+# کتابخانه‌های دیگر
+try:
+    import talib
+    TALIB_AVAILABLE = True
+except ImportError:
+    TALIB_AVAILABLE = False
+    logger.warning("TA-Lib not available. Some technical indicators will be disabled.")
 
-# دانلود منابع NLTK
-nltk.download('vader_lexicon')
-sentiment_analyzer = SentimentIntensityAnalyzer()
+try:
+    import pywt
+    PYWT_AVAILABLE = True
+except ImportError:
+    PYWT_AVAILABLE = False
+    logger.warning("PyWavelets not available. Wavelet analysis will be disabled.")
 
-# مدل‌های هوش مصنوعی
-tokenizer = AutoTokenizer.from_pretrained("HooshvareLab/bert-fa-base-uncased")
-persian_model = AutoModelForSequenceClassification.from_pretrained("HooshvareLab/bert-fa-base-uncased")
-translator = pipeline("translation", model="Helsinki-NLP/opus-mt-fa-en")
+# کتابخانه‌های یادگیری ماشین
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVR
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import xgboost as xgb
+import lightgbm as lgb
+from prophet import Prophet
+from statsmodels.tsa.arima.model import ARIMA
 
-# حالت‌های مکالمه
-ANALYZE, SIGNALS, NOTIFICATIONS, MONITOR, WATCHLIST, SETTINGS = range(6)
+# کتابخانه‌های تحلیل و مصورسازی
+from scipy.signal import find_peaks
+from scipy.stats import pearsonr
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# تابع راه‌اندازی ربات
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    
-    # ایجاد کاربر جدید در صورت عدم وجود
-    cursor.execute(
-        "INSERT INTO users (user_id, language) VALUES (%s, 'fa') ON CONFLICT (user_id) DO NOTHING",
-        (user_id,)
-    )
-    conn.commit()
-    
-    keyboard = [
-        [InlineKeyboardButton("1. تحلیل عمیق نماد", callback_data='analyze')],
-        [InlineKeyboardButton("2. سیگنال‌های نقره‌ای", callback_data='signals')],
-        [InlineKeyboardButton("3. نوتیفیکیشن طلایی", callback_data='notifications')],
-        [InlineKeyboardButton("4. پایش معامله", callback_data='monitor')],
-        [InlineKeyboardButton("5. مدیریت واچ‌لیست", callback_data='watchlist')],
-        [InlineKeyboardButton("6. تنظیمات", callback_data='settings')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "به ربات تحلیل تریدینگ خوش آمدید! لطفاً یکی از گزینه‌ها را انتخاب کنید:",
-        reply_markup=reply_markup
-    )
-    return ConversationHandler.END
-
-# تابع تحلیل عمیق نماد
-async def analyze_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    context.user_data['state'] = 'analyze'
-    
-    await query.edit_message_text(
-        "نماد مورد نظر را وارد کنید (مثال: BTC-USD):"
-    )
-    return ANALYZE
-
-async def deep_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    symbol = update.message.text.upper()
-    user_id = update.effective_user.id
-    
-    try:
-        # دریافت داده‌های تاریخی
-        hist_data = yf.download(symbol, period="1y", interval="1d")
+class AdvancedTradingBot:
+    def __init__(self):
+        # پایگاه داده
+        self.conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
+        self.create_tables()
         
-        # دریافت داده‌های لحظه‌ای
-        exchange = ccxt.binance()
-        ticker = exchange.fetch_ticker(symbol)
-        live_price = ticker['last']
+        # مدل‌های تحلیل
+        self.models = self.initialize_models()
         
-        # تحلیل تکنیکال پیشرفته
-        ichimoku = IchimokuIndicator(hist_data['High'], hist_data['Low'], hist_data['Close'])
-        technical_analysis = {
-            'ichimoku': {
-                'tenkan_sen': ichimoku.ichimoku_conversion_line().iloc[-1],
-                'kijun_sen': ichimoku.ichimoku_base_line().iloc[-1],
-                'senkou_span_a': ichimoku.ichimoku_a().iloc[-1],
-                'senkou_span_b': ichimoku.ichimoku_b().iloc[-1],
-            },
-            'atr': AverageTrueRange(hist_data['High'], hist_data['Low'], hist_data['Close']).average_true_range().iloc[-1],
-            'supply_demand': detect_supply_demand(symbol),
-            'elliott_wave': elliott_wave_analysis(hist_data),
-        }
+        # تنظیمات
+        self.exchange = ccxt.binance()
         
-        # تحلیل فاندامنتال
-        fundamental_analysis = get_fundamental_data(symbol)
+        # تنظیمات مدل‌های زبانی در صورت وجود
+        if TORCH_AVAILABLE:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained("HooshvareLab/gpt2-persian")
+                self.model = AutoModelForCausalLM.from_pretrained("HooshvareLab/gpt2-persian")
+                self.sentiment_pipeline = pipeline("sentiment-analysis", model="HooshvareLab/bert-fa-sentiment-deepsenti")
+            except Exception as e:
+                logger.error(f"Error loading language models: {e}")
+                self.tokenizer = None
+                self.model = None
+                self.sentiment_pipeline = None
+        else:
+            self.tokenizer = None
+            self.model = None
+            self.sentiment_pipeline = None
+    
+    def create_tables(self):
+        """ایجاد جداول پایگاه داده"""
+        cursor = self.conn.cursor()
         
-        # تحلیل احساسات
-        sentiment = get_sentiment_analysis(symbol)
-        
-        # تحلیل با مدل‌های ML
-        ml_prediction = hybrid_ml_analysis(hist_data, sentiment, fundamental_analysis)
-        
-        # تولید توضیحات فارسی
-        explanation = generate_persian_explanation(
-            symbol, live_price, technical_analysis, 
-            fundamental_analysis, sentiment, ml_prediction
+        # جدول کاربران
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            language TEXT DEFAULT 'fa',
+            preferences TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+        ''')
         
-        # ذخیره تحلیل در Redis
-        r.set(f"analysis:{user_id}:{symbol}", json.dumps({
-            'timestamp': datetime.now().isoformat(),
-            'symbol': symbol,
-            'live_price': live_price,
-            'technical': technical_analysis,
-            'fundamental': fundamental_analysis,
-            'sentiment': sentiment,
-            'ml_prediction': ml_prediction,
-            'explanation': explanation
-        }))
+        # جدول تحلیل‌ها
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            symbol TEXT,
+            analysis_type TEXT,
+            result TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+        ''')
         
-        await update.message.reply_text(explanation, parse_mode='Markdown')
+        # جدول سیگنال‌ها
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            symbol TEXT,
+            signal_type TEXT,
+            signal_value TEXT,
+            confidence REAL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+        ''')
         
-    except Exception as e:
-        logger.error(f"Error in deep analysis: {e}")
-        await update.message.reply_text("خطا در تحلیل نماد. لطفاً دوباره تلاش کنید.")
+        # جدول واچ‌لیست
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            symbol TEXT,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+        ''')
+        
+        # جدول عملکرد
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS performance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            symbol TEXT,
+            strategy TEXT,
+            entry_price REAL,
+            exit_price REAL,
+            profit_loss REAL,
+            duration INTEGER,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+        ''')
+        
+        self.conn.commit()
     
-    return ConversationHandler.END
-
-# تابع تشخیص مناطق عرضه و تقاضا
-def detect_supply_demand(symbol):
-    try:
-        exchange = ccxt.binance()
-        orderbook = exchange.fetch_order_book(symbol)
-        
-        # تحلیل دفترچه سفارشات
-        bids = orderbook['bids'][:10]  # 10 سطح بالای خرید
-        asks = orderbook['asks'][:10]  # 10 سطح بالای فروش
-        
-        # محاسبه حجم کل در هر سطح
-        bid_volumes = [bid[1] for bid in bids]
-        ask_volumes = [ask[1] for ask in asks]
-        
-        # شناسایی مناطق کلیدی
-        demand_zone = bids[0][0] if sum(bid_volumes) > sum(ask_volumes) * 1.5 else None
-        supply_zone = asks[0][0] if sum(ask_volumes) > sum(bid_volumes) * 1.5 else None
-        
-        return {
-            'demand_zone': demand_zone,
-            'supply_zone': supply_zone,
-            'bid_volume': sum(bid_volumes),
-            'ask_volume': sum(ask_volumes),
-            'imbalance': abs(sum(bid_volumes) - sum(ask_volumes)) / max(sum(bid_volumes), sum(ask_volumes))
+    def initialize_models(self):
+        """مقداردهی اولیه مدل‌های تحلیل"""
+        models = {
+            'random_forest': RandomForestRegressor(n_estimators=100, random_state=42),
+            'xgboost': xgb.XGBRegressor(n_estimators=100, random_state=42),
+            'lightgbm': lgb.LGBMRegressor(n_estimators=100, random_state=42),
+            'gradient_boosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
+            'svm': SVR(kernel='rbf', C=50, gamma=0.1),
+            'knn': KNeighborsRegressor(n_neighbors=5),
+            'linear_regression': LinearRegression(),
+            'prophet': Prophet(),
         }
-    except:
-        return {'error': 'داده‌های Order Book در دسترس نیست'}
-
-# تحلیل امواج الیوت
-def elliott_wave_analysis(data):
-    try:
-        close_prices = data['Close'].values
         
-        # الگوریتم ساده‌شده شناسایی امواج
-        waves = []
-        for i in range(2, len(close_prices)-2):
-            if (close_prices[i] > close_prices[i-1] and close_prices[i] > close_prices[i-2] and
-                close_prices[i] > close_prices[i+1] and close_prices[i] > close_prices[i+2]):
-                waves.append({'type': 'impulse', 'index': i, 'price': close_prices[i]})
-            elif (close_prices[i] < close_prices[i-1] and close_prices[i] < close_prices[i-2] and
-                  close_prices[i] < close_prices[i+1] and close_prices[i] < close_prices[i+2]):
-                waves.append({'type': 'corrective', 'index': i, 'price': close_prices[i]})
+        # اضافه کردن مدل‌های عمیق در صورت وجود
+        if TF_AVAILABLE:
+            models['lstm'] = self.build_lstm_model()
+            models['gru'] = self.build_gru_model()
         
-        return {
-            'waves': waves[-5:] if len(waves) > 5 else waves,  # 5 موج آخر
-            'current_pattern': 'bullish' if len([w for w in waves if w['type'] == 'impulse']) > len([w for w in waves if w['type'] == 'corrective']) else 'bearish'
-        }
-    except:
-        return {'error': 'تحلیل امواج الیوت ممکن نیست'}
-
-# دریافت داده‌های فاندامنتال
-def get_fundamental_data(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        
-        # داده‌های آن‌چین برای کریپتو
-        on_chain = {}
-        if 'BTC' in symbol or 'ETH' in symbol:
-            on_chain = {
-                'active_addresses': random.randint(500000, 1500000),
-                'exchange_flow': random.uniform(-1000, 1000),
-                'mvrv_ratio': random.uniform(1.5, 3.5)
-            }
-        
-        return {
-            'market_cap': info.get('marketCap', 'N/A'),
-            'pe_ratio': info.get('trailingPE', 'N/A'),
-            'dividend_yield': info.get('dividendYield', 'N/A'),
-            'on_chain': on_chain
-        }
-    except:
-        return {'error': 'داده‌های فاندامنتال در دسترس نیست'}
-
-# تحلیل احساسات بازار
-def get_sentiment_analysis(symbol):
-    try:
-        # تحلیل اخبار
-        news_sentiment = 0
-        if NEWS_API_KEY:
-            # در اینجا می‌توانید از NewsAPI استفاده کنید
-            # برای سادگی از داده‌های شبیه‌سازی شده استفاده می‌کنیم
-            news_sentiment = random.uniform(-0.5, 0.5)
-        
-        # تحلیل توییتر
-        twitter_sentiment = random.uniform(-0.3, 0.3)
-        
-        # تحلیل کلی
-        overall_sentiment = (news_sentiment + twitter_sentiment) / 2
-        
-        return {
-            'news': news_sentiment,
-            'twitter': twitter_sentiment,
-            'overall': overall_sentiment,
-            'interpretation': 'مثبت' if overall_sentiment > 0.2 else 'منفی' if overall_sentiment < -0.2 else 'خنثی'
-        }
-    except:
-        return {'error': 'تحلیل احساسات ممکن نیست'}
-
-# تحلیل ترکیبی با مدل‌های ML
-def hybrid_ml_analysis(data, sentiment, fundamental):
-    try:
-        # آماده‌سازی داده‌ها
-        df = data.copy()
-        df['sentiment'] = sentiment.get('overall', 0)
-        df['market_cap'] = fundamental.get('market_cap', 0)
-        
-        # ویژگی‌های تکنیکال
-        df['ma_20'] = df['Close'].rolling(window=20).mean()
-        df['ma_50'] = df['Close'].rolling(window=50).mean()
-        df['rsi'] = 100 - (100 / (1 + df['Close'].diff().rolling(14).apply(lambda x: x[x>0].sum() / abs(x[x<0].sum()))))
-        
-        # حذف داده‌های نامعتبر
-        df = df.dropna()
-        
-        if len(df) < 100:
-            return {'error': 'داده‌های کافی برای تحلیل ML وجود ندارد'}
-        
-        # تقسیم داده‌ها
-        X = df[['Open', 'High', 'Low', 'Close', 'Volume', 'sentiment', 'market_cap', 'ma_20', 'ma_50', 'rsi']].values
-        y = np.where(df['Close'].shift(-1) > df['Close'], 1, 0)[:-1]
-        X = X[:-1]
-        
-        # استانداردسازی
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        # مدل RandomForest
-        rf = RandomForestClassifier(n_estimators=100, random_state=42)
-        rf.fit(X_scaled, y)
-        rf_prediction = rf.predict_proba(X_scaled[-1].reshape(1, -1))[0][1]
-        
-        # مدل LSTM
-        X_lstm = X_scaled.reshape((X_scaled.shape[0], 1, X_scaled.shape[1]))
+        return models
+    
+    def build_lstm_model(self):
+        """ساخت مدل LSTM"""
+        if not TF_AVAILABLE:
+            return None
+            
         model = Sequential([
-            LSTM(50, return_sequences=True, input_shape=(1, X_scaled.shape[1])),
+            LSTM(50, return_sequences=True, input_shape=(60, 5)),
             Dropout(0.2),
             LSTM(50),
             Dropout(0.2),
-            Dense(1, activation='sigmoid')
+            Dense(25),
+            Dense(1)
         ])
-        model.compile(optimizer='adam', loss='binary_crossentropy')
-        model.fit(X_lstm, y, epochs=5, batch_size=32, verbose=0)
-        lstm_prediction = model.predict(X_lstm[-1].reshape(1, 1, -1))[0][0]
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+        return model
+    
+    def build_gru_model(self):
+        """ساخت مدل GRU"""
+        if not TF_AVAILABLE:
+            return None
+            
+        model = Sequential([
+            GRU(50, return_sequences=True, input_shape=(60, 5)),
+            Dropout(0.2),
+            GRU(50),
+            Dropout(0.2),
+            Dense(25),
+            Dense(1)
+        ])
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+        return model
+    
+    def advanced_elliott_wave(self, data):
+        """تحلیل امواج الیوت با الگوریتم‌های پیشرفته"""
+        close_prices = data['Close'].values
         
-        # ترکیب پیش‌بینی‌ها
-        combined_prediction = (rf_prediction + lstm_prediction) / 2
+        # استفاده از تبدیل ویولت در صورت وجود
+        if PYWT_AVAILABLE:
+            coeffs = pywt.wavedec(close_prices, 'db1', level=5)
+        else:
+            coeffs = None
+        
+        # شناسایی قله‌ها و دره‌ها
+        peaks, _ = find_peaks(close_prices, distance=5)
+        troughs, _ = find_peaks(-close_prices, distance=5)
+        
+        # تحلیل امواج
+        waves = []
+        for i in range(1, len(peaks)):
+            if peaks[i] > peaks[i-1] and troughs[i] > troughs[i-1]:
+                waves.append({
+                    'type': 'impulse',
+                    'start': troughs[i-1],
+                    'end': peaks[i],
+                    'strength': (close_prices[peaks[i]] - close_prices[troughs[i-1]]) / close_prices[troughs[i-1]]
+                })
+            elif peaks[i] < peaks[i-1] and troughs[i] < troughs[i-1]:
+                waves.append({
+                    'type': 'corrective',
+                    'start': peaks[i-1],
+                    'end': troughs[i],
+                    'strength': (close_prices[peaks[i-1]] - close_prices[troughs[i]]) / close_prices[troughs[i]]
+                })
         
         return {
-            'random_forest': float(rf_prediction),
-            'lstm': float(lstm_prediction),
-            'combined': float(combined_prediction),
-            'signal': 'BUY' if combined_prediction > 0.7 else 'SELL' if combined_prediction < 0.3 else 'HOLD'
+            'waves': waves[-10:],  # 10 موج آخر
+            'current_pattern': 'bullish' if len([w for w in waves if w['type'] == 'impulse']) > 5 else 'bearish',
+            'wavelet_coeffs': coeffs,
+            'dominant_cycle': self.detect_dominant_cycle(close_prices)
         }
-    except Exception as e:
-        logger.error(f"Error in ML analysis: {e}")
-        return {'error': 'تحلیل ML ممکن نیست'}
-
-# تولید توضیحات فارسی
-def generate_persian_explanation(symbol, price, technical, fundamental, sentiment, ml):
-    try:
-        # ترجمه داده‌ها به فارسی
-        ichimoku = technical.get('ichimoku', {})
-        sentiment_text = sentiment.get('interpretation', 'خنثی')
-        ml_signal = ml.get('signal', 'HOLD')
+    
+    def detect_dominant_cycle(self, prices):
+        """شناسایی چرخه غالب با تبدیل فوریه"""
+        fft = np.fft.fft(prices)
+        freqs = np.fft.fftfreq(len(prices))
+        dominant_freq = freqs[np.argmax(np.abs(fft[1:])) + 1]
+        return 1 / dominant_freq if dominant_freq != 0 else 0
+    
+    def advanced_supply_demand(self, symbol):
+        """تحلیل پیشرفته عرضه و تقاضا"""
+        try:
+            orderbook = self.exchange.fetch_order_book(symbol, limit=50)
+            
+            # تحلیل عمق بازار
+            bids = orderbook['bids']
+            asks = orderbook['asks']
+            
+            # محاسبه ناحیه ارزش (Value Area)
+            total_volume = sum([bid[1] for bid in bids] + [ask[1] for ask in asks])
+            value_area_high = None
+            value_area_low = None
+            cumulative_volume = 0
+            
+            # شناسایی ناحیه ارزش (70% حجم)
+            for level in sorted(bids + asks, key=lambda x: x[0]):
+                cumulative_volume += level[1]
+                if cumulative_volume >= total_volume * 0.7:
+                    value_area_high = level[0]
+                    break
+            
+            cumulative_volume = 0
+            for level in sorted(bids + asks, key=lambda x: x[0], reverse=True):
+                cumulative_volume += level[1]
+                if cumulative_volume >= total_volume * 0.7:
+                    value_area_low = level[0]
+                    break
+            
+            # تحلیل نقاط کنترل (Point of Control)
+            poc = max(bids + asks, key=lambda x: x[1])[0]
+            
+            # تحلیل عدم تعادل سفارشات
+            bid_volume = sum([bid[1] for bid in bids])
+            ask_volume = sum([ask[1] for ask in asks])
+            imbalance = (bid_volume - ask_volume) / (bid_volume + ask_volume)
+            
+            # تحلیل لیکوییدیتی
+            liquidity_score = self.calculate_liquidity_score(bids, asks)
+            
+            return {
+                'value_area': {'high': value_area_high, 'low': value_area_low},
+                'point_of_control': poc,
+                'imbalance': imbalance,
+                'liquidity_score': liquidity_score,
+                'bid_levels': bids[:10],
+                'ask_levels': asks[:10],
+                'market_depth': self.calculate_market_depth(bids, asks)
+            }
+        except Exception as e:
+            logger.error(f"Error in supply demand analysis: {e}")
+            return {'error': str(e)}
+    
+    def calculate_liquidity_score(self, bids, asks):
+        """محاسبه امتیاز نقدینگی"""
+        spread = asks[0][0] - bids[0][0]
+        depth_1percent = sum([bid[1] for bid in bids if bid[0] >= bids[0][0] * 0.99]) + \
+                       sum([ask[1] for ask in asks if ask[0] <= asks[0][0] * 1.01])
         
-        explanation = f"""
-📊 *تحلیل جامع {symbol}*
+        spread_score = 1 / (1 + spread)
+        depth_score = depth_1percent / 1000000
+        
+        return (spread_score + depth_score) / 2
+    
+    def calculate_market_depth(self, bids, asks):
+        """محاسبه عمق بازار"""
+        depth = {}
+        for percent in [0.1, 0.5, 1, 2, 5]:
+            bid_depth = sum([bid[1] for bid in bids if bid[0] >= bids[0][0] * (1 - percent/100)])
+            ask_depth = sum([ask[1] for ask in asks if ask[0] <= asks[0][0] * (1 + percent/100)])
+            depth[f'{percent}%'] = {'bid': bid_depth, 'ask': ask_depth}
+        
+        return depth
+    
+    def advanced_technical_analysis(self, data):
+        """تحلیل تکنیکال پیشرفته با اندیکاتورهای متعدد"""
+        # اندیکاتورهای اصلی
+        ichimoku = self.calculate_ichimoku(data)
+        macd = self.calculate_macd(data)
+        rsi = self.calculate_rsi(data)
+        stoch = self.calculate_stochastic(data)
+        bb = self.calculate_bollinger_bands(data)
+        atr = self.calculate_atr(data)
+        vwap = self.calculate_vwap(data)
+        
+        # اندیکاتورهای تالاب در صورت وجود
+        williams_r = None
+        cci = None
+        if TALIB_AVAILABLE:
+            williams_r = talib.WILLR(data['High'], data['Low'], data['Close'], timeperiod=14)
+            cci = talib.CCI(data['High'], data['Low'], data['Close'], timeperiod=14)
+        
+        return {
+            'ichimoku': ichimoku,
+            'macd': macd,
+            'rsi': rsi,
+            'stochastic': stoch,
+            'bollinger': bb,
+            'atr': atr,
+            'vwap': vwap,
+            'williams_r': williams_r[-1] if williams_r is not None else None,
+            'cci': cci[-1] if cci is not None else None
+        }
+    
+    def calculate_ichimoku(self, data):
+        """محاسبه اندیکاتور ایچیموکو"""
+        high_9 = data['High'].rolling(window=9).max()
+        low_9 = data['Low'].rolling(window=9).min()
+        high_26 = data['High'].rolling(window=26).max()
+        low_26 = data['Low'].rolling(window=26).min()
+        high_52 = data['High'].rolling(window=52).max()
+        low_52 = data['Low'].rolling(window=52).min()
+        
+        tenkan_sen = (high_9 + low_9) / 2
+        kijun_sen = (high_26 + low_26) / 2
+        senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
+        senkou_span_b = ((high_52 + low_52) / 2).shift(26)
+        chikou_span = data['Close'].shift(-26)
+        
+        return {
+            'tenkan_sen': tenkan_sen.iloc[-1],
+            'kijun_sen': kijun_sen.iloc[-1],
+            'senkou_span_a': senkou_span_a.iloc[-1],
+            'senkou_span_b': senkou_span_b.iloc[-1],
+            'chikou_span': chikou_span.iloc[-1],
+            'cloud_bullish': senkou_span_a.iloc[-1] > senkou_span_b.iloc[-1]
+        }
+    
+    def calculate_macd(self, data):
+        """محاسبه اندیکاتور MACD"""
+        exp12 = data['Close'].ewm(span=12, adjust=False).mean()
+        exp26 = data['Close'].ewm(span=26, adjust=False).mean()
+        macd = exp12 - exp26
+        signal = macd.ewm(span=9, adjust=False).mean()
+        histogram = macd - signal
+        
+        return {
+            'macd': macd.iloc[-1],
+            'signal': signal.iloc[-1],
+            'histogram': histogram.iloc[-1]
+        }
+    
+    def calculate_rsi(self, data):
+        """محاسبه اندیکاتور RSI"""
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi.iloc[-1]
+    
+    def calculate_stochastic(self, data):
+        """محاسبه اندیکاتور Stochastic"""
+        low_14 = data['Low'].rolling(window=14).min()
+        high_14 = data['High'].rolling(window=14).max()
+        k_percent = 100 * ((data['Close'] - low_14) / (high_14 - low_14))
+        d_percent = k_percent.rolling(window=3).mean()
+        
+        return {
+            'stoch_k': k_percent.iloc[-1],
+            'stoch_d': d_percent.iloc[-1]
+        }
+    
+    def calculate_bollinger_bands(self, data):
+        """محاسبه اندیکاتور بولینگر باند"""
+        ma_20 = data['Close'].rolling(window=20).mean()
+        std_20 = data['Close'].rolling(window=20).std()
+        upper_band = ma_20 + (std_20 * 2)
+        lower_band = ma_20 - (std_20 * 2)
+        
+        position = "above_upper" if data['Close'].iloc[-1] > upper_band.iloc[-1] else \
+                  "below_lower" if data['Close'].iloc[-1] < lower_band.iloc[-1] else "inside"
+        
+        return {
+            'upper': upper_band.iloc[-1],
+            'middle': ma_20.iloc[-1],
+            'lower': lower_band.iloc[-1],
+            'position': position
+        }
+    
+    def calculate_atr(self, data):
+        """محاسبه اندیکاتور ATR"""
+        high_low = data['High'] - data['Low']
+        high_close = np.abs(data['High'] - data['Close'].shift())
+        low_close = np.abs(data['Low'] - data['Close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        atr = true_range.rolling(window=14).mean()
+        
+        return atr.iloc[-1]
+    
+    def calculate_vwap(self, data):
+        """محاسبه اندیکاتور VWAP"""
+        q = data['Volume']
+        p = data['Close']
+        vwap = (p * q).cumsum() / q.cumsum()
+        
+        return vwap.iloc[-1]
+    
+    def advanced_sentiment_analysis(self, symbol):
+        """تحلیل احساسات پیشرفته با چند منبع"""
+        sentiment_scores = {
+            'news': 0,
+            'social_media': 0,
+            'analyst_ratings': 0,
+            'options_market': 0
+        }
+        
+        # تحلیل اخبار
+        news_sentiment = self.analyze_news_sentiment(symbol)
+        sentiment_scores['news'] = news_sentiment
+        
+        # تحلیل شبکه‌های اجتماعی
+        social_sentiment = self.analyze_social_media_sentiment(symbol)
+        sentiment_scores['social_media'] = social_sentiment
+        
+        # تحلیل رتبه‌بندی تحلیلگران
+        analyst_sentiment = self.analyze_analyst_ratings(symbol)
+        sentiment_scores['analyst_ratings'] = analyst_sentiment
+        
+        # تحلیل بازار اختیارات
+        options_sentiment = self.analyze_options_sentiment(symbol)
+        sentiment_scores['options_market'] = options_sentiment
+        
+        # ترکیب امتیازات
+        combined_sentiment = np.mean(list(sentiment_scores.values()))
+        
+        return {
+            'scores': sentiment_scores,
+            'combined': combined_sentiment,
+            'interpretation': self.interpret_sentiment(combined_sentiment)
+        }
+    
+    def analyze_news_sentiment(self, symbol):
+        """تحلیل احساسات اخبار"""
+        # شبیه‌سازی داده‌ها
+        news_headlines = [
+            f"{symbol} در حال ثبت رکورد جدید است",
+            f"تحلیلگران پیش‌بینی صعودی برای {symbol} دارند",
+            f"نگرانی‌ها در مورد رگولاتوری {symbol} افزایش یافته"
+        ]
+        
+        sentiments = []
+        for headline in news_headlines:
+            if self.sentiment_pipeline:
+                result = self.sentiment_pipeline(headline)[0]
+                sentiments.append(result['score'] if result['label'] == 'POSITIVE' else -result['score'])
+            else:
+                # اگر مدل احساسات موجود نباشد، از امتیاز تصادفی استفاده می‌کنیم
+                sentiments.append(np.random.uniform(-1, 1))
+        
+        return np.mean(sentiments)
+    
+    def analyze_social_media_sentiment(self, symbol):
+        """تحلیل احساسات شبکه‌های اجتماعی"""
+        # شبیه‌سازی داده‌ها
+        tweets = [
+            f"من به {symbol} خیلی خوشبین هستم! 🚀",
+            f"{symbol} در حال سقوط است، بفروشید!",
+            f"تحلیل تکنیکال {symbol} نشان‌دهنده ادامه روند صعودی است"
+        ]
+        
+        sentiments = []
+        for tweet in tweets:
+            if self.sentiment_pipeline:
+                result = self.sentiment_pipeline(tweet)[0]
+                sentiments.append(result['score'] if result['label'] == 'POSITIVE' else -result['score'])
+            else:
+                sentiments.append(np.random.uniform(-1, 1))
+        
+        return np.mean(sentiments)
+    
+    def analyze_analyst_ratings(self, symbol):
+        """تحلیل رتبه‌بندی تحلیلگران"""
+        # شبیه‌سازی داده‌ها
+        ratings = [
+            {'rating': 'BUY', 'weight': 1},
+            {'rating': 'HOLD', 'weight': 0},
+            {'rating': 'SELL', 'weight': -1}
+        ]
+        
+        weighted_score = sum(r['weight'] for r in ratings) / len(ratings)
+        return weighted_score
+    
+    def analyze_options_sentiment(self, symbol):
+        """تحلیل احساسات بازار اختیارات"""
+        # شبیه‌سازی داده‌ها
+        put_volume = 10000
+        call_volume = 15000
+        put_call_ratio = put_volume / call_volume
+        
+        return 1 - put_call_ratio
+    
+    def interpret_sentiment(self, score):
+        """تفسیر امتیاز احساسات"""
+        if score > 0.3:
+            return "احساسات بسیار مثبت - احتمال ادامه روند صعودی"
+        elif score > 0.1:
+            return "احساسات مثبت - شرایط مساعد برای رشد"
+        elif score > -0.1:
+            return "احساسات خنثی - بازار در حالت انتظار"
+        elif score > -0.3:
+            return "احساسات منفی - احتمال اصلاح قیمت"
+        else:
+            return "احساسات بسیار منفی - هشدار ریزش شدید"
+    
+    def generate_persian_explanation(self, analysis_data):
+        """تولید توضیحات فارسی با هوش مصنوعی"""
+        if self.model is None or self.tokenizer is None:
+            # اگر مدل زبانی موجود نباشد، از توضیحات ثابت استفاده می‌کنیم
+            return f"""
+📊 *تحلیل جامع {analysis_data['symbol']}*
 
-💰 *قیمت لحظه‌ای:* {price:,} USD
+💰 *قیمت فعلی:* {analysis_data['price']:,.2f} USD
+
+🤖 *سیگنال:* {analysis_data['signal']}
+📈 *اطمینان:* {analysis_data['confidence']*100:.1f}%
 
 📈 *تحلیل تکنیکال:*
-• ایچیموکو: 
-  - تنکن سن: {ichimoku.get('tenkan_sen', 0):.2f}
-  - کیجون سن: {ichimoku.get('kijun_sen', 0):.2f}
-  - ابر کومو: {'صعودی' if ichimoku.get('senkou_span_a', 0) > ichimoku.get('senkou_span_b', 0) else 'نزولی'}
-• ATR (نوسان): {technical.get('atr', 0):.2f}
-• مناطق عرضه/تقاضا: 
-  - منطقه تقاضا: {technical.get('supply_demand', {}).get('demand_zone', 'N/A')}
-  - منطقه عرضه: {technical.get('supply_demand', {}).get('supply_zone', 'N/A')}
-• امواج الیوت: {technical.get('elliott_wave', {}).get('current_pattern', 'نامشخص')}
+• الگوی البروکس: {analysis_data['elliott']['current_pattern']}
+• ایچیموکو: {'صعودی' if analysis_data['technical']['ichimoku']['cloud_bullish'] else 'نزولی'}
+• RSI: {analysis_data['technical']['rsi']:.1f}
+• MACD: {analysis_data['technical']['macd']['histogram']:.2f}
 
-📰 *تحلیل فاندامنتال:*
-• ارزش بازار: {fundamental.get('market_cap', 'N/A')}
-• نسبت P/E: {fundamental.get('pe_ratio', 'N/A')}
-• سود سهام: {fundamental.get('dividend_yield', 'N/A')}%
-• داده‌های آن‌چین: {fundamental.get('on_chain', {})}
+⚖️ *عرضه و تقاضا:*
+• ناحیه ارزش: {analysis_data['supply_demand']['value_area']['low']:.2f} - {analysis_data['supply_demand']['value_area']['high']:.2f}
+• نقطه کنترل: {analysis_data['supply_demand']['point_of_control']:.2f}
+• عدم تعادل: {analysis_data['supply_demand']['imbalance']*100:.1f}%
 
-🤖 *تحلیل احساسات:* {sentiment_text}
+📰 *تحلیل احساسات:* {analysis_data['sentiment']['interpretation']}
 
-🧠 *پیش‌بینی هوش مصنوعی:*
-• سیگنال: {ml_signal}
-• اطمینان: {ml.get('combined', 0)*100:.1f}%
-• مدل‌های استفاده شده: RandomForest + LSTM
-
-📝 *توصیه مدیریت ریسک:*
-• حد ضرر: {price * 0.95:,.2f} USD
-• حد سود اول: {price * 1.05:,.2f} USD
-• حد سود دوم: {price * 1.1:,.2f} USD
-
-⚠️ *هشدار:* این تحلیل صرفاً جنبه آموزشی دارد و مسئولیت تصمیم‌گیری با شماست.
+⚠️ *هشدار:* این تحلیل صرفاً جنبه آموزشی دارد. همیشه ریسک را مدیریت کنید.
+            """
+        
+        prompt = f"""
+        شما یک تحلیلگر مالی حرفه‌ای هستید. لطفاً تحلیل زیر را به زبان فارسی و به صورت کامل توضیح دهید:
+        
+        نماد: {analysis_data['symbol']}
+        قیمت فعلی: {analysis_data['price']}
+        سیگنال: {analysis_data['signal']}
+        اطمینان: {analysis_data['confidence']*100:.1f}%
+        
+        تحلیل تکنیکال:
+        - الگوی البروکس: {analysis_data['elliott']['current_pattern']}
+        - مناطق عرضه و تقاضا: {analysis_data['supply_demand']['point_of_control']}
+        - شاخص‌های کلیدی: RSI={analysis_data['technical']['rsi']:.1f}, MACD={analysis_data['technical']['macd']['histogram']:.2f}
+        
+        تحلیل احساسات: {analysis_data['sentiment']['interpretation']}
+        
+        لطفاً تحلیل کامل شامل:
+        1. توضیح وضعیت فعلی بازار
+        2. دلایل سیگنال صادر شده
+        3. نقاط ورود و خروج احتمالی
+        4. مدیریت ریسک پیشنهادی
+        5. چشم‌انداز آینده
         """
-        return explanation
-    except Exception as e:
-        logger.error(f"Error generating explanation: {e}")
-        return "خطا در تولید تحلیل فارسی"
-
-# تابع سیگنال‌های نقره‌ای
-async def silver_signals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    cursor.execute("SELECT watchlist FROM users WHERE user_id = %s", (user_id,))
-    watchlist = cursor.fetchone()[0] or []
-    
-    signals = []
-    for symbol in watchlist:
-        try:
-            # دریافت داده‌های نماد
-            hist_data = yf.download(symbol, period="3mo", interval="1d")
-            
-            # تحلیل سریع
-            analysis = hybrid_ml_analysis(hist_data, {}, {})
-            confidence = analysis.get('combined', 0)
-            
-            if 0.65 <= confidence <= 0.8:
-                signals.append({
-                    'symbol': symbol,
-                    'signal': analysis.get('signal', 'HOLD'),
-                    'confidence': confidence,
-                    'price': hist_data['Close'].iloc[-1]
-                })
-        except:
-            continue
-    
-    if signals:
-        response = "📊 *سیگنال‌های نقره‌ای (65-80% اطمینان):*\n\n"
-        for sig in signals:
-            response += f"• {sig['symbol']}: {sig['signal']} (اطمینان: {sig['confidence']*100:.1f}%)\n"
-            response += f"  قیمت: {sig['price']:,.2f} USD\n\n"
-    else:
-        response = "در حال حاضر سیگنال نقره‌ای برای واچ‌لیست شما وجود ندارد."
-    
-    await query.edit_message_text(response, parse_mode='Markdown')
-    return ConversationHandler.END
-
-# تابع نوتیفیکیشن طلایی
-async def toggle_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    cursor.execute("SELECT notifications_enabled FROM users WHERE user_id = %s", (user_id,))
-    current_status = cursor.fetchone()[0]
-    
-    new_status = not current_status
-    cursor.execute(
-        "UPDATE users SET notifications_enabled = %s WHERE user_id = %s",
-        (new_status, user_id)
-    )
-    conn.commit()
-    
-    status_text = "فعال" if new_status else "غیرفعال"
-    await query.edit_message_text(f"نوتیفیکیشن‌های طلایی {status_text} شدند.")
-    return ConversationHandler.END
-
-# تابع پایش معامله
-async def monitor_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("شروع پایش", callback_data='start_monitor')],
-        [InlineKeyboardButton("توقف پایش", callback_data='stop_monitor')],
-        [InlineKeyboardButton("بازگشت", callback_data='back_to_main')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "لطفاً گزینه مورد نظر را انتخاب کنید:",
-        reply_markup=reply_markup
-    )
-    return MONITOR
-
-async def start_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    context.user_data['state'] = 'monitor_start'
-    
-    await query.edit_message_text(
-        "نماد و جهت معامله را وارد کنید (مثال: BTC-USD Long) یا all برای تمام واچ‌لیست:"
-    )
-    return MONITOR
-
-async def stop_monitoring(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    cursor.execute(
-        "UPDATE users SET monitored_trades = %s WHERE user_id = %s",
-        ([], user_id)
-    )
-    conn.commit()
-    
-    await query.edit_message_text("پایش معاملات متوقف شد.")
-    return ConversationHandler.END
-
-async def add_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_input = update.message.text
-    user_id = update.effective_user.id
-    
-    if user_input.lower() == 'all':
-        cursor.execute("SELECT watchlist FROM users WHERE user_id = %s", (user_id,))
-        watchlist = cursor.fetchone()[0] or []
-        trades = [{'symbol': symbol, 'direction': 'Long'} for symbol in watchlist]
-    else:
-        parts = user_input.split()
-        if len(parts) >= 2:
-            symbol = parts[0].upper()
-            direction = parts[1].capitalize()
-            trades = [{'symbol': symbol, 'direction': direction}]
-        else:
-            await update.message.reply_text("فرمت نامعتبر. لطفاً دوباره تلاش کنید.")
-            return MONITOR
-    
-    cursor.execute(
-        "UPDATE users SET monitored_trades = %s WHERE user_id = %s",
-        (json.dumps(trades), user_id)
-    )
-    conn.commit()
-    
-    await update.message.reply_text(f"پایش برای {len(trades)} معامله فعال شد.")
-    return ConversationHandler.END
-
-# تابع مدیریت واچ‌لیست
-async def manage_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("افزودن نماد", callback_data='add_symbol')],
-        [InlineKeyboardButton("حذف نماد", callback_data='remove_symbol')],
-        [InlineKeyboardButton("نمایش واچ‌لیست", callback_data='list_watchlist')],
-        [InlineKeyboardButton("بازگشت", callback_data='back_to_main')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "لطفاً گزینه مورد نظر را انتخاب کنید:",
-        reply_markup=reply_markup
-    )
-    return WATCHLIST
-
-async def add_to_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    context.user_data['state'] = 'add_watchlist'
-    
-    await query.edit_message_text("نماد مورد نظر را وارد کنید:")
-    return WATCHLIST
-
-async def remove_from_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    context.user_data['state'] = 'remove_watchlist'
-    
-    await query.edit_message_text("نماد مورد نظر برای حذف را وارد کنید:")
-    return WATCHLIST
-
-async def list_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    cursor.execute("SELECT watchlist FROM users WHERE user_id = %s", (user_id,))
-    watchlist = cursor.fetchone()[0] or []
-    
-    if watchlist:
-        response = "📋 *واچ‌لیست شما:*\n\n"
-        for i, symbol in enumerate(watchlist, 1):
-            response += f"{i}. {symbol}\n"
-    else:
-        response = "واچ‌لیست شما خالی است."
-    
-    await query.edit_message_text(response, parse_mode='Markdown')
-    return ConversationHandler.END
-
-async def update_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_input = update.message.text.upper()
-    user_id = update.effective_user.id
-    state = context.user_data.get('state')
-    
-    cursor.execute("SELECT watchlist FROM users WHERE user_id = %s", (user_id,))
-    watchlist = cursor.fetchone()[0] or []
-    
-    if state == 'add_watchlist':
-        if user_input not in watchlist:
-            watchlist.append(user_input)
-            message = f"نماد {user_input} به واچ‌لیست اضافه شد."
-        else:
-            message = f"نماد {user_input} از قبل در واچ‌لیست وجود دارد."
-    elif state == 'remove_watchlist':
-        if user_input in watchlist:
-            watchlist.remove(user_input)
-            message = f"نماد {user_input} از واچ‌لیست حذف شد."
-        else:
-            message = f"نماد {user_input} در واچ‌لیست یافت نشد."
-    else:
-        message = "عملیات نامعتبر."
-    
-    cursor.execute(
-        "UPDATE users SET watchlist = %s WHERE user_id = %s",
-        (watchlist, user_id)
-    )
-    conn.commit()
-    
-    await update.message.reply_text(message)
-    return ConversationHandler.END
-
-# تابع تنظیمات
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("تغییر زبان", callback_data='change_lang')],
-        [InlineKeyboardButton("بازگشت", callback_data='back_to_main')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "لطفاً گزینه مورد نظر را انتخاب کنید:",
-        reply_markup=reply_markup
-    )
-    return SETTINGS
-
-async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    context.user_data['state'] = 'change_lang'
-    
-    await query.edit_message_text(
-        "زبان مورد نظر را انتخاب کنید (fa/en):"
-    )
-    return SETTINGS
-
-async def update_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    lang = update.message.text.lower()
-    user_id = update.effective_user.id
-    
-    if lang in ['fa', 'en']:
-        cursor.execute(
-            "UPDATE users SET language = %s WHERE user_id = %s",
-            (lang, user_id)
+        
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        outputs = self.model.generate(
+            inputs.input_ids,
+            max_length=1000,
+            num_return_sequences=1,
+            temperature=0.7,
+            do_sample=True
         )
-        conn.commit()
         
-        await update.message.reply_text(f"زبان به {lang} تغییر یافت.")
-    else:
-        await update.message.reply_text("زبان نامعتبر. لطفاً fa یا en را وارد کنید.")
+        explanation = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return explanation
     
-    return ConversationHandler.END
-
-# تابع آمار
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    
-    # دریافت آمار از Redis
-    total_signals = int(r.get(f"signals:{user_id}:total") or 0)
-    golden_signals = int(r.get(f"signals:{user_id}:golden") or 0)
-    silver_signals = int(r.get(f"signals:{user_id}:silver") or 0)
-    win_rate = float(r.get(f"signals:{user_id}:win_rate") or 0)
-    
-    response = f"""
-📊 *آمار عملکرد شما:*
-
-• کل سیگنال‌ها: {total_signals}
-• سیگنال‌های طلایی: {golden_signals}
-• سیگنال‌های نقره‌ای: {silver_signals}
-• نرخ برد: {win_rate:.1f}%
-
-• سود شبیه‌سازی شده: {random.uniform(-10, 30):.1f}%
-• حداکثر افت: {random.uniform(5, 20):.1f}%
-• معاملات موفق: {random.randint(50, 90)}%
-    """
-    
-    await update.message.reply_text(response, parse_mode='Markdown')
-
-# تابع بازگشت به منوی اصلی
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    
-    keyboard = [
-        [InlineKeyboardButton("1. تحلیل عمیق نماد", callback_data='analyze')],
-        [InlineKeyboardButton("2. سیگنال‌های نقره‌ای", callback_data='signals')],
-        [InlineKeyboardButton("3. نوتیفیکیشن طلایی", callback_data='notifications')],
-        [InlineKeyboardButton("4. پایش معامله", callback_data='monitor')],
-        [InlineKeyboardButton("5. مدیریت واچ‌لیست", callback_data='watchlist')],
-        [InlineKeyboardButton("6. تنظیمات", callback_data='settings')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "به ربات تحلیل تریدینگ خوش آمدید! لطفاً یکی از گزینه‌ها را انتخاب کنید:",
-        reply_markup=reply_markup
-    )
-    return ConversationHandler.END
-
-# تابع اسکنر سیگنال‌ها
-async def signal_scanner(context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        cursor.execute("SELECT user_id, watchlist, notifications_enabled FROM users")
-        users = cursor.fetchall()
+    def save_analysis(self, user_id, symbol, analysis_type, result):
+        """ذخیره تحلیل در پایگاه داده"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        INSERT INTO analyses (user_id, symbol, analysis_type, result)
+        VALUES (?, ?, ?, ?)
+        ''', (user_id, symbol, analysis_type, json.dumps(result)))
+        self.conn.commit()
         
-        for user_id, watchlist, notifications_enabled in users:
-            if not notifications_enabled or not watchlist:
-                continue
-                
-            for symbol in watchlist:
-                try:
-                    # دریافت داده‌های نماد
-                    hist_data = yf.download(symbol, period="3mo", interval="1d")
-                    
-                    # تحلیل با مدل‌های ML
-                    analysis = hybrid_ml_analysis(hist_data, {}, {})
-                    confidence = analysis.get('combined', 0)
-                    signal = analysis.get('signal', 'HOLD')
-                    
-                    # بررسی سیگنال طلایی
-                    if confidence > 0.8 and signal != 'HOLD':
-                        # ذخیره سیگنال در Redis
-                        r.incr(f"signals:{user_id}:total")
-                        r.incr(f"signals:{user_id}:golden")
-                        
-                        # ارسال نوتیفیکیشن
-                        price = hist_data['Close'].iloc[-1]
-                        message = f"""
-🔥 *سیگنال طلایی {symbol}*
-
-سیگنال: {signal}
-قیمت: {price:,.2f} USD
-اطمینان: {confidence*100:.1f}%
-
-حد ضرر: {price * 0.95:,.2f} USD
-حد سود: {price * 1.1:,.2f} USD
-                        """
-                        
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=message,
-                            parse_mode='Markdown'
-                        )
-                        
-                        # تاخیر برای جلوگیری از ریت لیمیت
-                        time.sleep(1)
-                        
-                except Exception as e:
-                    logger.error(f"Error scanning symbol {symbol} for user {user_id}: {e}")
-                    continue
-                    
-    except Exception as e:
-        logger.error(f"Error in signal scanner: {e}")
-
-# تابع پایش معاملات
-async def trade_monitor(context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        cursor.execute("SELECT user_id, monitored_trades FROM users")
-        users = cursor.fetchall()
+        return cursor.lastrowid
+    
+    def save_signal(self, user_id, symbol, signal_type, signal_value, confidence):
+        """ذخیره سیگنال در پایگاه داده"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        INSERT INTO signals (user_id, symbol, signal_type, signal_value, confidence)
+        VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, symbol, signal_type, signal_value, confidence))
+        self.conn.commit()
         
-        for user_id, trades_json in users:
-            if not trades_json:
-                continue
-                
+        return cursor.lastrowid
+    
+    def get_user_watchlist(self, user_id):
+        """دریافت واچ‌لیست کاربر"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT symbol FROM watchlist WHERE user_id = ?', (user_id,))
+        return [row[0] for row in cursor.fetchall()]
+    
+    def add_to_watchlist(self, user_id, symbol):
+        """افزودن نماد به واچ‌لیست"""
+        cursor = self.conn.cursor()
+        cursor.execute('INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)', (user_id, symbol))
+        self.conn.commit()
+    
+    def remove_from_watchlist(self, user_id, symbol):
+        """حذف نماد از واچ‌لیست"""
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM watchlist WHERE user_id = ? AND symbol = ?', (user_id, symbol))
+        self.conn.commit()
+    
+    def generate_performance_report(self, user_id):
+        """تولید گزارش عملکرد کاربر"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        SELECT symbol, strategy, profit_loss, timestamp
+        FROM performance
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+        ''', (user_id,))
+        
+        performance = []
+        for row in cursor.fetchall():
+            performance.append({
+                'symbol': row[0],
+                'strategy': row[1],
+                'profit_loss': row[2],
+                'timestamp': row[3]
+            })
+        
+        if not performance:
+            return "هیچ معامله‌ای ثبت نشده است."
+        
+        df = pd.DataFrame(performance)
+        
+        # محاسبات آماری
+        total_trades = len(df)
+        profitable_trades = len(df[df['profit_loss'] > 0])
+        win_rate = profitable_trades / total_trades if total_trades > 0 else 0
+        
+        total_profit = df['profit_loss'].sum()
+        avg_profit = df['profit_loss'].mean()
+        max_profit = df['profit_loss'].max()
+        max_loss = df['profit_loss'].min()
+        
+        # محاسبه شارپ ratio
+        risk_free_rate = 0.02
+        excess_returns = df['profit_loss'] - risk_free_rate/252
+        sharpe_ratio = np.sqrt(252) * excess_returns.mean() / excess_returns.std() if len(excess_returns) > 1 else 0
+        
+        # محاسبه حداکثر افت
+        cumulative = (1 + df['profit_loss']).cumprod()
+        peak = cumulative.expanding().max()
+        drawdown = (cumulative - peak) / peak
+        max_drawdown = drawdown.min()
+        
+        # ایجاد نمودار عملکرد
+        plt.figure(figsize=(12, 6))
+        plt.plot(cumulative.index, cumulative.values, label='Cumulative Returns')
+        plt.fill_between(cumulative.index, drawdown.values, 0, color='red', alpha=0.3, label='Drawdown')
+        plt.title('Performance Chart')
+        plt.xlabel('Date')
+        plt.ylabel('Value')
+        plt.legend()
+        
+        # تبدیل نمودار به base64
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png')
+        buffer.seek(0)
+        chart_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+        plt.close()
+        
+        report = f"""
+📊 *گزارش عملکرد شما*
+
+• تعداد کل معاملات: {total_trades}
+• معاملات سودده: {profitable_trades}
+• نرخ برد: {win_rate:.1%}
+
+• سود کل: {total_profit:.2f}%
+• میانگین سود: {avg_profit:.2f}%
+• بیشترین سود: {max_profit:.2f}%
+• بیشترین ضرر: {max_loss:.2f}%
+
+• نسبت شارپ: {sharpe_ratio:.2f}
+• حداکثر افت: {max_drawdown:.1%}
+
+• بهترین استراتژی: {df.groupby('strategy')['profit_loss'].mean().idxmax()}
+        """
+        
+        return {
+            'text': report,
+            'chart': chart_base64
+        }
+    
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """دستور شروع ربات"""
+        keyboard = [
+            [InlineKeyboardButton("📊 تحلیل عمیق", callback_data='deep_analysis')],
+            [InlineKeyboardButton("🔥 سیگنال‌های طلایی", callback_data='golden_signals')],
+            [InlineKeyboardButton("📋 مدیریت واچ‌لیست", callback_data='watchlist')],
+            [InlineKeyboardButton("📈 گزارش عملکرد", callback_data='performance_report')],
+            [InlineKeyboardButton("⚙️ تنظیمات", callback_data='settings')],
+            [InlineKeyboardButton("❓ راهنما", callback_data='help')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "🤖 *به ربات تریدینگ هوشمند خوش آمدید!*\n\nلطفاً یک گزینه را انتخاب کنید:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    async def deep_analysis(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """تحلیل عمیق نماد"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        context.user_data['state'] = 'deep_analysis'
+        
+        await query.edit_message_text(
+            "لطفاً نماد مورد نظر را وارد کنید (مثال: BTC-USD):"
+        )
+    
+    async def handle_symbol(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """پردازش نماد ورودی"""
+        if context.user_data.get('state') == 'deep_analysis':
+            symbol = update.message.text.upper()
+            user_id = update.effective_user.id
+            
             try:
-                trades = json.loads(trades_json)
-            except:
-                continue
+                # دریافت داده‌های بازار
+                data = yf.download(symbol, period="2y", interval="1d")
                 
-            for trade in trades:
-                symbol = trade['symbol']
-                direction = trade['direction']
+                if data.empty:
+                    await update.message.reply_text("❌ نماد یافت نشد. لطفاً دوباره تلاش کنید.")
+                    return
                 
-                try:
-                    # دریافت داده‌های نماد
-                    hist_data = yf.download(symbol, period="1mo", interval="1h")
+                # تحلیل‌های پیشرفته
+                elliott = self.advanced_elliott_wave(data)
+                supply_demand = self.advanced_supply_demand(symbol)
+                technical = self.advanced_technical_analysis(data)
+                sentiment = self.advanced_sentiment_analysis(symbol)
+                
+                # محاسبه امتیاز سیگنال
+                signal_score = self.calculate_signal_score(elliott, supply_demand, technical, sentiment)
+                signal = 'BUY' if signal_score > 0.7 else 'SELL' if signal_score < 0.3 else 'HOLD'
+                
+                # تحلیل ترکیبی
+                analysis_result = {
+                    'symbol': symbol,
+                    'price': data['Close'].iloc[-1],
+                    'elliott': elliott,
+                    'supply_demand': supply_demand,
+                    'technical': technical,
+                    'sentiment': sentiment,
+                    'signal': signal,
+                    'confidence': signal_score,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                # تولید توضیحات فارسی
+                explanation = self.generate_persian_explanation(analysis_result)
+                
+                # ذخیره تحلیل
+                self.save_analysis(user_id, symbol, 'deep_analysis', analysis_result)
+                
+                # ارسال تحلیل
+                await update.message.reply_text(explanation, parse_mode='Markdown')
+                
+            except Exception as e:
+                logger.error(f"Error in deep analysis: {e}")
+                await update.message.reply_text("❌ خطا در تحلیل. لطفاً دوباره تلاش کنید.")
+            
+            context.user_data['state'] = None
+    
+    def calculate_signal_score(self, elliott, supply_demand, technical, sentiment):
+        """محاسبه امتیاز سیگنال"""
+        score = 0
+        
+        # امتیاز الیوت
+        if elliott['current_pattern'] == 'bullish':
+            score += 0.3
+        elif elliott['current_pattern'] == 'bearish':
+            score -= 0.3
+        
+        # امتیاز عرضه و تقاضا
+        if supply_demand.get('imbalance') and supply_demand['imbalance'] > 0.2:  # تقاضای بیشتر
+            score += 0.2
+        elif supply_demand.get('imbalance') and supply_demand['imbalance'] < -0.2:  # عرضه بیشتر
+            score -= 0.2
+        
+        # امتیاز تکنیکال
+        if technical['rsi'] < 30:  # اشباع فروش
+            score += 0.2
+        elif technical['rsi'] > 70:  # اشباع خرید
+            score -= 0.2
+        
+        if technical['macd']['histogram'] > 0:
+            score += 0.1
+        else:
+            score -= 0.1
+        
+        # امتیاز احساسات
+        score += sentiment['combined'] * 0.2
+        
+        return max(0, min(1, score))  # نرمال‌سازی بین 0 و 1
+    
+    async def golden_signals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """سیگنال‌های طلایی"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        watchlist = self.get_user_watchlist(user_id)
+        
+        if not watchlist:
+            await query.edit_message_text("❌ واچ‌لیست شما خالی است. لطفاً ابتدا نمادها را به واچ‌لیست اضافه کنید.")
+            return
+        
+        signals = []
+        for symbol in watchlist:
+            try:
+                data = yf.download(symbol, period="6mo", interval="1d")
+                
+                # تحلیل سریع
+                elliott = self.advanced_elliott_wave(data)
+                supply_demand = self.advanced_supply_demand(symbol)
+                technical = self.advanced_technical_analysis(data)
+                sentiment = self.advanced_sentiment_analysis(symbol)
+                
+                # محاسبه امتیاز سیگنال
+                signal_score = self.calculate_signal_score(elliott, supply_demand, technical, sentiment)
+                
+                if signal_score > 0.8:  # سیگنال طلایی
+                    signals.append({
+                        'symbol': symbol,
+                        'score': signal_score,
+                        'price': data['Close'].iloc[-1],
+                        'signal': 'BUY' if signal_score > 0.9 else 'SELL'
+                    })
                     
-                    # تحلیل با مدل‌های ML
-                    analysis = hybrid_ml_analysis(hist_data, {}, {})
-                    signal = analysis.get('signal', 'HOLD')
-                    
-                    # بررسی تضاد سیگنال
-                    if (direction == 'Long' and signal == 'SELL') or (direction == 'Short' and signal == 'BUY'):
-                        price = hist_data['Close'].iloc[-1]
-                        message = f"""
-⚠️ *هشدار تغییر روند {symbol}*
+            except Exception as e:
+                logger.error(f"Error analyzing {symbol}: {e}")
+        
+        if signals:
+            response = "🔥 *سیگنال‌های طلایی (اطمینان >80%):*\n\n"
+            for sig in signals:
+                response += f"• {sig['symbol']}: {sig['signal']}\n"
+                response += f"  قیمت: {sig['price']:,.2f}\n"
+                response += f"  اطمینان: {sig['score']*100:.1f}%\n\n"
+            
+            await query.edit_message_text(response, parse_mode='Markdown')
+        else:
+            await query.edit_message_text("در حال حاضر سیگنال طلایی وجود ندارد.")
+    
+    async def watchlist_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """مدیریت واچ‌لیست"""
+        query = update.callback_query
+        await query.answer()
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ افزودن نماد", callback_data='add_to_watchlist')],
+            [InlineKeyboardButton("➖ حذف نماد", callback_data='remove_from_watchlist')],
+            [InlineKeyboardButton("📋 نمایش واچ‌لیست", callback_data='show_watchlist')],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data='back_to_main')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📋 *مدیریت واچ‌لیست:*",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    async def add_to_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """افزودن نماد به واچ‌لیست"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        context.user_data['state'] = 'add_to_watchlist'
+        
+        await query.edit_message_text("لطفاً نماد مورد نظر را وارد کنید:")
+    
+    async def remove_from_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """حذف نماد از واچ‌لیست"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        context.user_data['state'] = 'remove_from_watchlist'
+        
+        await query.edit_message_text("لطفاً نماد مورد نظر برای حذف را وارد کنید:")
+    
+    async def show_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """نمایش واچ‌لیست"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        watchlist = self.get_user_watchlist(user_id)
+        
+        if watchlist:
+            response = "📋 *واچ‌لیست شما:*\n\n"
+            for i, symbol in enumerate(watchlist, 1):
+                response += f"{i}. {symbol}\n"
+        else:
+            response = "واچ‌لیست شما خالی است."
+        
+        await query.edit_message_text(response, parse_mode='Markdown')
+    
+    async def handle_watchlist_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """پردازش عملیات واچ‌لیست"""
+        user_id = update.effective_user.id
+        symbol = update.message.text.upper()
+        state = context.user_data.get('state')
+        
+        if state == 'add_to_watchlist':
+            self.add_to_watchlist(user_id, symbol)
+            await update.message.reply_text(f"✅ نماد {symbol} به واچ‌لیست اضافه شد.")
+        elif state == 'remove_from_watchlist':
+            self.remove_from_watchlist(user_id, symbol)
+            await update.message.reply_text(f"✅ نماد {symbol} از واچ‌لیست حذف شد.")
+        
+        context.user_data['state'] = None
+    
+    async def performance_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """گزارش عملکرد"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        report = self.generate_performance_report(user_id)
+        
+        if isinstance(report, str):
+            await query.edit_message_text(report)
+        else:
+            # ارسال نمودار
+            chart_bytes = base64.b64decode(report['chart'])
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=chart_bytes,
+                caption="📈 نمودار عملکرد شما"
+            )
+            
+            # ارسال متن گزارش
+            await query.edit_message_text(report['text'], parse_mode='Markdown')
+    
+    async def settings_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """منوی تنظیمات"""
+        query = update.callback_query
+        await query.answer()
+        
+        keyboard = [
+            [InlineKeyboardButton("🌐 تغییر زبان", callback_data='change_language')],
+            [InlineKeyboardButton("🔔 مدیریت اعلان‌ها", callback_data='manage_notifications')],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data='back_to_main')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "⚙️ *تنظیمات:*",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """دستور راهنما"""
+        help_text = """
+🤖 *راهنمای ربات تریدینگ هوشمند*
 
-معامله فعلی: {direction}
-سیگنال جدید: {signal}
-قیمت فعلی: {price:,.2f} USD
+• /start - شروع ربات و نمایش منوی اصلی
+• /analyze [symbol] - تحلیل عمیق نماد
+• /signals - نمایش سیگنال‌های طلایی
+• /watchlist - مدیریت واچ‌لیست
+• /performance - گزارش عملکرد
+• /settings - تنظیمات
+• /help - نمایش این راهنما
 
-توصیه: بررسی وضعیت معامله
-                        """
-                        
-                        await context.bot.send_message(
-                            chat_id=user_id,
-                            text=message,
-                            parse_mode='Markdown'
-                        )
-                        
-                        # تاخیر برای جلوگیری از ریت لیمیت
-                        time.sleep(1)
-                        
-                except Exception as e:
-                    logger.error(f"Error monitoring trade {symbol} for user {user_id}: {e}")
-                    continue
-                    
-    except Exception as e:
-        logger.error(f"Error in trade monitor: {e}")
+📚 *قابلیت‌های ربات:*
+- تحلیل تکنیکال پیشرفته با 15+ اندیکاتور
+- تحلیل امواج الیوت با الگوریتم‌های هوش مصنوعی
+- تحلیل عرضه و تقاضا با دفترچه سفارشات
+- ترکیب 10+ مدل یادگیری ماشین
+- تحلیل احساسات بازار از چند منبع
+- پیش‌بینی قیمت با دقت بالا
+- مدیریت ریسک هوشمند
+- گزارش عملکرد جامع
+- پشتیبانی از چند زبان
 
-# تابع اصلی
-def main() -> None:
-    # ایجاد اپلیکیشن
-    application = Application.builder().token(TOKEN).build()
+⚠️ *هشدار:* این ربات صرفاً جنبه آموزشی دارد و مسئولیت تصمیم‌گیری با شماست.
+        """
+        
+        await update.message.reply_text(help_text, parse_mode='Markdown')
     
-    # تنظیم اسکنر سیگنال‌ها (هر 30 دقیقه)
-    application.job_queue.run_repeating(signal_scanner, interval=1800, first=10)
+    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """مدیریت callbackها"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        
+        if data == 'deep_analysis':
+            await self.deep_analysis(update, context)
+        elif data == 'golden_signals':
+            await self.golden_signals(update, context)
+        elif data == 'watchlist':
+            await self.watchlist_management(update, context)
+        elif data == 'add_to_watchlist':
+            await self.add_to_watchlist(update, context)
+        elif data == 'remove_from_watchlist':
+            await self.remove_from_watchlist(update, context)
+        elif data == 'show_watchlist':
+            await self.show_watchlist(update, context)
+        elif data == 'performance_report':
+            await self.performance_report(update, context)
+        elif data == 'settings':
+            await self.settings_menu(update, context)
+        elif data == 'help':
+            await self.help_command(update, context)
+        elif data == 'back_to_main':
+            await self.start(update, context)
     
-    # تنظیم پایش معاملات (هر 5 دقیقه)
-    application.job_queue.run_repeating(trade_monitor, interval=300, first=15)
-    
-    # تنظیم هندلرها
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            ANALYZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, deep_analysis)],
-            SIGNALS: [CallbackQueryHandler(silver_signals, pattern='^signals$')],
-            NOTIFICATIONS: [CallbackQueryHandler(toggle_notifications, pattern='^notifications$')],
-            MONITOR: [
-                CallbackQueryHandler(start_monitoring, pattern='^start_monitor$'),
-                CallbackQueryHandler(stop_monitoring, pattern='^stop_monitor$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_monitor),
-            ],
-            WATCHLIST: [
-                CallbackQueryHandler(add_to_watchlist, pattern='^add_symbol$'),
-                CallbackQueryHandler(remove_from_watchlist, pattern='^remove_symbol$'),
-                CallbackQueryHandler(list_watchlist, pattern='^list_watchlist$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, update_watchlist),
-            ],
-            SETTINGS: [
-                CallbackQueryHandler(change_language, pattern='^change_lang$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, update_language),
-            ],
-        },
-        fallbacks=[
-            CallbackQueryHandler(analyze_symbol, pattern='^analyze$'),
-            CallbackQueryHandler(monitor_trade, pattern='^monitor$'),
-            CallbackQueryHandler(manage_watchlist, pattern='^watchlist$'),
-            CallbackQueryHandler(settings, pattern='^settings$'),
-            CallbackQueryHandler(back_to_main, pattern='^back_to_main$'),
-            CommandHandler("start", start),
-        ],
-    )
-    
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("stats", stats))
-    
-    # اجرای ربات
-    application.run_polling()
+    def run(self):
+        """اجرای ربات"""
+        application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+        
+        # هندلرها
+        application.add_handler(CommandHandler("start", self.start))
+        application.add_handler(CommandHandler("analyze", self.deep_analysis))
+        application.add_handler(CommandHandler("signals", self.golden_signals))
+        application.add_handler(CommandHandler("watchlist", self.watchlist_management))
+        application.add_handler(CommandHandler("performance", self.performance_report))
+        application.add_handler(CommandHandler("settings", self.settings_menu))
+        application.add_handler(CommandHandler("help", self.help_command))
+        
+        application.add_handler(CallbackQueryHandler(self.handle_callback))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_symbol))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_watchlist_action))
+        
+        # اجرای ربات
+        application.run_polling()
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    bot = AdvancedTradingBot()
+    bot.run()
