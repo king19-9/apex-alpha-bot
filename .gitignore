@@ -1,4 +1,3 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,40 +6,12 @@ __pycache__/
 env/
 venv/
 ENV/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# پایگاه داده
-*.db
-*.sqlite
-*.sqlite3
-
-# متغیرهای محیطی
 .env
+.venv
 .env.local
-.env.*.local
-
-# فایل‌های موقت
-*.tmp
-*.log
-*.cache
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# سیستم عامل
+.env.production
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Railway
-railway.toml
+.vscode/
+*.log
+*.db
+trading_bot.db

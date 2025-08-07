@@ -1,47 +1,6 @@
-# استفاده از تصویر پایه با پایتون 3.11
-FROM python:3.11-slim
-
-# تنظیم متغیرهای محیطی
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV DEBIAN_FRONTEND=noninteractive
-
-# نصب پیش‌نیازهای سیستمی
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    libpq-dev \
-    libffi-dev \
-    libssl-dev \
-    libgomp1 \
-    libatlas-base-dev \
-    gfortran \
-    wget \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# نصب TA-Lib از سورس
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
-    tar -xvf ta-lib-0.4.0-src.tar.gz && \
-    cd ta-lib/ && \
-    ./configure --prefix=/usr && \
-    make && \
-    make install && \
-    cd .. && \
-    rm -rf ta-lib/ ta-lib-0.4.0-src.tar.gz
-
-# ایجاد دایرکتوری کار
+FROM python:3.9-slim
 WORKDIR /app
-
-# کپی فایل‌های مورد نیاز برای نصب وابستگی‌ها
 COPY requirements.txt .
-
-# نصب وابستگی‌ها با بهینه‌سازی
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r requirements.txt
-
-# کپی کد برنامه
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-
-# دستور اجرایی
 CMD ["python", "main.py"]
