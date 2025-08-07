@@ -9,7 +9,6 @@ import ccxt
 import sqlite3
 import aiohttp
 import requests
-import schedule
 import time
 from datetime import datetime, timedelta
 import pytz
@@ -40,7 +39,7 @@ load_dotenv()
 # تنظیمات لاگینگ پیشرفته
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,
+    level=logging.INFO,
     handlers=[
         logging.FileHandler('trading_bot.log'),
         logging.StreamHandler()
@@ -135,6 +134,9 @@ except ImportError as e:
 
 class AdvancedTradingBot:
     def __init__(self):
+        """مقداردهی اولیه ربات"""
+        logger.info("Initializing AdvancedTradingBot...")
+        
         # تنظیمات پروکسی
         self.session = requests.Session()
         if PROXY_SETTINGS:
@@ -187,12 +189,11 @@ class AdvancedTradingBot:
         else:
             self.offline_mode = False
         
-        # شروع وظایف زمان‌بندی شده
-        self.start_scheduled_tasks()
-        
         # راه‌اندازی سیستم تحلیل متن پیشرفته
         self.setup_text_analysis()
-    
+        
+        logger.info("AdvancedTradingBot initialized successfully")
+
     def test_internet_connection(self):
         """تست دسترسی به اینترنت"""
         try:
@@ -200,7 +201,7 @@ class AdvancedTradingBot:
             return response.status_code == 200
         except:
             return False
-    
+
     def setup_text_analysis(self):
         """راه‌اندازی سیستم تحلیل متن پیشرفته"""
         # کلمات کلیدی برای تحلیل احساسات
@@ -255,7 +256,7 @@ class AdvancedTradingBot:
                 'profit_target': '10%+'
             }
         }
-    
+
     def create_tables(self):
         """ایجاد جداول پایگاه داده"""
         cursor = self.conn.cursor()
@@ -369,7 +370,7 @@ class AdvancedTradingBot:
         
         self.conn.commit()
         logger.info("Database tables created successfully")
-    
+
     def initialize_models(self):
         """مقداردهی اولیه مدل‌های تحلیل"""
         models = {
@@ -397,7 +398,7 @@ class AdvancedTradingBot:
         
         logger.info("Machine learning models initialized")
         return models
-    
+
     def build_lstm_model(self):
         """ساخت مدل LSTM"""
         if not TF_AVAILABLE:
@@ -413,7 +414,7 @@ class AdvancedTradingBot:
         ])
         model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
         return model
-    
+
     def build_gru_model(self):
         """ساخت مدل GRU"""
         if not TF_AVAILABLE:
@@ -429,7 +430,7 @@ class AdvancedTradingBot:
         ])
         model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
         return model
-    
+
     async def fetch_data_from_multiple_sources(self, symbol):
         """دریافت داده‌ها از چندین منبع با مدیریت خطا"""
         data = {}
@@ -479,7 +480,7 @@ class AdvancedTradingBot:
             return self.generate_offline_data(symbol)
         
         return data
-    
+
     def generate_offline_data(self, symbol):
         """تولید داده‌های آفلاین برای تست"""
         logger.info(f"Generating offline data for {symbol}")
@@ -519,7 +520,7 @@ class AdvancedTradingBot:
                 }
             }
         }
-    
+
     async def fetch_coingecko_data(self, symbol):
         """دریافت داده‌ها از CoinGecko"""
         async with aiohttp.ClientSession() as session:
@@ -541,7 +542,7 @@ class AdvancedTradingBot:
                     data = await response.json()
                     return data.get(symbol.lower(), {})
                 return {}
-    
+
     async def fetch_coinmarketcap_data(self, symbol):
         """دریافت داده‌ها از CoinMarketCap"""
         if not os.getenv('COINMARKETCAP_API_KEY'):
@@ -567,7 +568,7 @@ class AdvancedTradingBot:
                                 'percent_change_24h': crypto['quote']['USD']['percent_change_24h']
                             }
                 return {}
-    
+
     async def fetch_dexscreener_data(self, symbol):
         """دریافت داده‌ها از DEX Screener"""
         async with aiohttp.ClientSession() as session:
@@ -579,7 +580,7 @@ class AdvancedTradingBot:
                     if data['pairs']:
                         return data['pairs'][0]
                 return {}
-    
+
     async def fetch_tradingview_data(self, symbol):
         """دریافت داده‌ها از TradingView با وب اسکرپینگ"""
         try:
@@ -605,7 +606,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error scraping TradingView: {e}")
             return {}
-    
+
     async def fetch_exchange_data(self, symbol):
         """دریافت داده‌ها از صرافی‌ها با مدیریت خطا"""
         exchange_data = {}
@@ -645,7 +646,7 @@ class AdvancedTradingBot:
                 }
         
         return exchange_data
-    
+
     def generate_offline_exchange_data(self, symbol):
         """تولید داده‌های صرافی آفلاین"""
         base_prices = {
@@ -674,7 +675,7 @@ class AdvancedTradingBot:
                 'change': change * 100
             }
         }
-    
+
     def convert_symbol_for_exchange(self, symbol, exchange_name):
         """تبدیل نماد به فرمت مناسب برای صرافی"""
         # تبدیل نمادهای رایج
@@ -697,7 +698,7 @@ class AdvancedTradingBot:
         
         # در غیر این صورت، فرمت پیش‌فرض را برگردان
         return f"{symbol}/USDT"
-    
+
     async def fetch_news_from_multiple_sources(self, symbol=None):
         """دریافت اخبار از چندین منبع"""
         news = []
@@ -721,7 +722,7 @@ class AdvancedTradingBot:
             logger.error(f"Error fetching from CoinGecko: {e}")
         
         return news
-    
+
     async def fetch_cryptopanic_news(self, symbol=None):
         """دریافت اخبار از CryptoPanic"""
         if not self.cryptopanic_api_key:
@@ -753,7 +754,7 @@ class AdvancedTradingBot:
                         for item in data['results']
                     ]
         return []
-    
+
     async def fetch_newsapi_news(self, symbol=None):
         """دریافت اخبار از NewsAPI"""
         if not self.news_api_key:
@@ -784,7 +785,7 @@ class AdvancedTradingBot:
                         for item in data['articles']
                     ]
         return []
-    
+
     async def fetch_coingecko_news(self, symbol=None):
         """دریافت اخبار از CoinGecko"""
         async with aiohttp.ClientSession() as session:
@@ -809,7 +810,7 @@ class AdvancedTradingBot:
                         for item in data['data']
                     ]
         return []
-    
+
     async def advanced_sentiment_analysis(self, news_items):
         """تحلیل احساسات پیشرفته با هوش مصنوعی داخلی"""
         if not news_items:
@@ -852,7 +853,7 @@ class AdvancedTradingBot:
                 'trends': trends
             }
         return {'average_sentiment': 0, 'positive_count': 0, 'negative_count': 0, 'neutral_count': 0, 'topics': [], 'trends': []}
-    
+
     def analyze_text_sentiment(self, text):
         """تحلیل احساسات متن با روش‌های پیشرفته"""
         text_lower = text.lower()
@@ -893,7 +894,7 @@ class AdvancedTradingBot:
         
         # نرمال‌سازی بین -1 و 1
         return max(-1, min(1, sentiment_score))
-    
+
     def extract_topics(self, text):
         """استخراج موضوعات از متن"""
         # کلمات کلیدی موضوعات مختلف
@@ -914,7 +915,7 @@ class AdvancedTradingBot:
                 found_topics.append(topic)
         
         return found_topics
-    
+
     def analyze_trends(self, text):
         """تحلیل روندها در متن"""
         trends = []
@@ -951,12 +952,12 @@ class AdvancedTradingBot:
                 trends.append({'type': 'bearish', 'pattern': matches[0]})
         
         return trends
-    
+
     def get_top_topics(self, topics):
         """دریافت پرتکرارترین موضوعات"""
         topic_counts = Counter(topics)
         return [topic for topic, count in topic_counts.most_common(3)]
-    
+
     async def get_market_data(self, symbol):
         """دریافت داده‌های بازار از چندین منبع"""
         # دریافت داده‌ها از منابع مختلف
@@ -993,7 +994,7 @@ class AdvancedTradingBot:
             'price_change_24h': avg_change,
             'sources': list(all_data.keys())
         }
-    
+
     def get_offline_market_data(self, symbol):
         """دریافت داده‌های بازار آفلاین"""
         base_prices = {
@@ -1021,7 +1022,7 @@ class AdvancedTradingBot:
             'price_change_24h': change * 100,
             'sources': ['offline']
         }
-    
+
     async def perform_advanced_analysis(self, symbol):
         """انجام تحلیل پیشرفته با مدیریت خطا"""
         try:
@@ -1117,7 +1118,7 @@ class AdvancedTradingBot:
                 'confidence': 0.5,
                 'error': str(e)
             }
-    
+
     def perform_ai_analysis(self, historical_data, market_data, sentiment):
         """انجام تحلیل هوش مصنوعی پیشرفته"""
         ai_results = {}
@@ -1143,7 +1144,7 @@ class AdvancedTradingBot:
         ai_results['behavior_analysis'] = behavior_analysis
         
         return ai_results
-    
+
     def predict_price(self, historical_data):
         """پیش‌بینی قیمت با مدل‌های مختلف"""
         if len(historical_data) < 30:
@@ -1190,7 +1191,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in price prediction: {e}")
             return {'error': str(e)}
-    
+
     def calculate_prediction_confidence(self, predictions):
         """محاسبه اطمینان پیش‌بینی"""
         if len(predictions) < 2:
@@ -1207,7 +1208,7 @@ class AdvancedTradingBot:
             return 0.7
         else:  # انحراف معیار زیاد
             return 0.5
-    
+
     def analyze_risk(self, historical_data, market_data):
         """تحلیل ریسک"""
         try:
@@ -1230,14 +1231,14 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in risk analysis: {e}")
             return {'error': str(e)}
-    
+
     def calculate_max_drawdown(self, prices):
         """محاسبه حداکثر افت"""
         cumulative = (1 + prices.pct_change()).cumprod()
         peak = cumulative.expanding().max()
         drawdown = (cumulative - peak) / peak
         return drawdown.min()
-    
+
     def calculate_beta(self, prices):
         """محاسه بتا نسبت به بازار"""
         try:
@@ -1263,7 +1264,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error calculating beta: {e}")
             return 1.0
-    
+
     def analyze_liquidity_risk(self, market_data):
         """تحلیل ریسک نقدینگی"""
         try:
@@ -1287,7 +1288,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in liquidity risk analysis: {e}")
             return 0.5
-    
+
     def calculate_risk_score(self, risk_metrics):
         """محاسبه امتیاز ریسک کلی"""
         try:
@@ -1329,7 +1330,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error calculating risk score: {e}")
             return 0.5  # مقدار پیش‌فرض در صورت خطا
-    
+
     def get_historical_data(self, symbol, period='1y'):
         """دریافت داده‌های تاریخی"""
         try:
@@ -1344,7 +1345,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error getting historical data: {e}")
             return self.generate_dummy_data(symbol)
-    
+
     def generate_dummy_data(self, symbol):
         """تولید داده‌های ساختگی برای تست"""
         base_prices = {
@@ -1373,7 +1374,7 @@ class AdvancedTradingBot:
             'Close': prices,
             'Volume': [1000000 * np.random.uniform(0.8, 1.2) for _ in range(365)]
         }, index=dates)
-    
+
     def advanced_technical_analysis(self, data):
         """تحلیل تکنیکال پیشرفته با تمام ابزارها"""
         try:
@@ -1419,7 +1420,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in advanced technical analysis: {e}")
             return {}
-    
+
     def classical_analysis(self, data):
         """تحلیل تکنیکال کلاسیک"""
         try:
@@ -1481,7 +1482,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in classical analysis: {e}")
             return {}
-    
+
     def get_bollinger_position(self, price, bb_data):
         """تعیین موقعیت قیمت نسبت به بولینگر"""
         upper = bb_data['BBU_20_2.0'].iloc[-1]
@@ -1494,7 +1495,7 @@ class AdvancedTradingBot:
             return "below"
         else:
             return "inside"
-    
+
     def analyze_trend(self, data):
         """تحلیل روند قیمت"""
         try:
@@ -1520,7 +1521,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error analyzing trend: {e}")
             return {'direction': 'unknown', 'slope': 0, 'strength': 0}
-    
+
     def find_key_levels(self, data):
         """یافتن سطوح کلیدی حمایت و مقاومت"""
         try:
@@ -1539,7 +1540,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error finding key levels: {e}")
             return {'resistance': [], 'support': []}
-    
+
     def price_action_analysis(self, data):
         """تحلیل پرایس اکشن به سبک ال بروکس"""
         try:
@@ -1567,7 +1568,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in price action analysis: {e}")
             return {}
-    
+
     def identify_candlestick_patterns(self, data):
         """شناسایی الگوهای کندلی"""
         try:
@@ -1620,7 +1621,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error identifying candlestick patterns: {e}")
             return {}
-    
+
     def analyze_market_structure(self, data):
         """تحلیل ساختار بازار (HH, HL, LH, LL)"""
         try:
@@ -1660,7 +1661,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error analyzing market structure: {e}")
             return {}
-    
+
     def detect_break_of_structure(self, data):
         """تشخیص شکست ساختار"""
         try:
@@ -1697,7 +1698,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting break of structure: {e}")
             return {}
-    
+
     def find_supply_demand_zones(self, data):
         """یافتن نواحی عرضه و تقاضا"""
         try:
@@ -1740,7 +1741,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error finding supply/demand zones: {e}")
             return {}
-    
+
     def merge_nearby_zones(self, zones, threshold=0.02):
         """ادغام نواحی نزدیک به هم"""
         if not zones:
@@ -1757,7 +1758,7 @@ class AdvancedTradingBot:
                 merged.append(zone)
         
         return merged
-    
+
     def identify_price_patterns(self, data):
         """شناسایی الگوهای قیمت"""
         try:
@@ -1779,7 +1780,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error identifying price patterns: {e}")
             return {}
-    
+
     def analyze_volatility(self, data):
         """تحلیل نوسانات"""
         try:
@@ -1807,7 +1808,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error analyzing volatility: {e}")
             return {}
-    
+
     def detect_head_and_shoulders(self, data):
         """تشخیص الگوی سر و شانه"""
         try:
@@ -1833,7 +1834,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting head and shoulders: {e}")
             return None
-    
+
     def detect_double_top_bottom(self, data):
         """تشخیص الگوی دو قله/دو کف"""
         try:
@@ -1869,7 +1870,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting double top/bottom: {e}")
             return None
-    
+
     def detect_triangle_pattern(self, data):
         """تشخیص الگوی مثلث"""
         try:
@@ -1896,7 +1897,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting triangle pattern: {e}")
             return None
-    
+
     def detect_flag_pattern(self, data):
         """تشخیص الگوی پرچم"""
         try:
@@ -1923,7 +1924,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting flag pattern: {e}")
             return None
-    
+
     def multi_timeframe_analysis(self, data):
         """تحلیل چند تایم‌فریم"""
         try:
@@ -1949,7 +1950,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in multi-timeframe analysis: {e}")
             return {}
-    
+
     def volume_analysis(self, data):
         """تحلیل حجم و نقدینگی"""
         try:
@@ -1979,7 +1980,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in volume analysis: {e}")
             return {}
-    
+
     def identify_volume_patterns(self, data):
         """شناسایی الگوهای حجمی"""
         try:
@@ -2007,7 +2008,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error identifying volume patterns: {e}")
             return {}
-    
+
     def divergence_analysis(self, data):
         """تحلیل واگرایی"""
         try:
@@ -2030,7 +2031,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in divergence analysis: {e}")
             return {}
-    
+
     def detect_divergence(self, price, indicator):
         """تشخیص واگرایی بین قیمت و اندیکاتور"""
         try:
@@ -2065,7 +2066,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting divergence: {e}")
             return {}
-    
+
     def fibonacci_analysis(self, data):
         """تحلیل فیبوناچی"""
         try:
@@ -2095,7 +2096,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in Fibonacci analysis: {e}")
             return {}
-    
+
     def find_fibonacci_zones(self, data):
         """یافتن مناطق فیبوناچی"""
         try:
@@ -2124,7 +2125,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error finding Fibonacci zones: {e}")
             return []
-    
+
     def find_price_swings(self, data):
         """یافتن نوسانات قیمت"""
         try:
@@ -2157,7 +2158,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error finding price swings: {e}")
             return []
-    
+
     def wave_analysis(self, data):
         """تحلیل امواج (الیوت و ولف)"""
         try:
@@ -2176,7 +2177,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in wave analysis: {e}")
             return {}
-    
+
     def advanced_elliott_wave(self, data):
         """تحلیل امواج الیوت پیشرفته"""
         try:
@@ -2212,7 +2213,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in Elliott wave analysis: {e}")
             return {'current_pattern': 'unknown', 'points': [], 'confidence': 0}
-    
+
     def detect_wolfe_waves(self, data):
         """تشخیص امواج ولف"""
         try:
@@ -2242,7 +2243,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting Wolfe waves: {e}")
             return []
-    
+
     def detect_harmonic_patterns(self, data):
         """تشخیص الگوهای هارمونیک"""
         try:
@@ -2267,7 +2268,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error detecting harmonic patterns: {e}")
             return []
-    
+
     def detect_gartley_pattern(self, data):
         """تشخیص الگوی گارتلی"""
         # پیاده‌سازی ساده شده
@@ -2279,11 +2280,11 @@ class AdvancedTradingBot:
             # XA, AB, BC, CD
             # اینجا باید نسبت‌ها را بررسی کنیم
             
-            # برای سادگی، فقط یک مثال می‌زنیم
+            # برای سادگی، فقط یک مثال می‌زنم
             return points[:5]
         
         return None
-    
+
     def detect_butterfly_pattern(self, data):
         """تشخیص الگوی پروانه"""
         # مشابه الگوی گارتلی با نسبت‌های متفاوت
@@ -2293,7 +2294,7 @@ class AdvancedTradingBot:
             return points[:5]
         
         return None
-    
+
     def detect_bat_pattern(self, data):
         """تشخیص الگوی خفاش"""
         # مشابه الگوی گارتلی با نسبت‌های متفاوت
@@ -2303,7 +2304,7 @@ class AdvancedTradingBot:
             return points[:5]
         
         return None
-    
+
     def find_swing_points(self, data):
         """یافتن نقاط چرخش قیمت"""
         try:
@@ -2326,7 +2327,7 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error finding swing points: {e}")
             return []
-    
+
     def market_profile_analysis(self, data):
         """تحلیل مارکت پروفایل (TPO, Value Area, POC)"""
         try:
@@ -2375,1270 +2376,4 @@ class AdvancedTradingBot:
             }
             
             # محاسبه Point of Control (POC)
-            poc_bin = max(tpo_bins.items(), key=lambda x: x[1])[0]
-            poc_lower, poc_upper = map(float, poc_bin.split('-'))
-            profile['poc'] = (poc_lower + poc_upper) / 2
-            
-            # تحلیل ساختار مارکت پروفایل
-            profile['structure'] = self.analyze_market_profile_structure(tpo_bins)
-            
-            return profile
-        except Exception as e:
-            logger.error(f"Error in market profile analysis: {e}")
-            return {}
-    
-    def analyze_market_profile_structure(self, tpo_bins):
-        """تحلیل ساختار مارکت پروفایل"""
-        try:
-            # شناسایی الگوهای مارکت پروفایل
-            sorted_bins = sorted(tpo_bins.items(), key=lambda x: x[1], reverse=True)
-            
-            # الگوی P-shape (توزیع نرمال)
-            if len(sorted_bins) >= 10:
-                top_3 = sorted_bins[:3]
-                if all(abs(top_3[i][1] - top_3[i+1][1]) / top_3[i][1] < 0.3 for i in range(2)):
-                    return 'normal_distribution'
-            
-            # الگوی b-shape (دو قله)
-            if len(sorted_bins) >= 6:
-                first_peak = sorted_bins[0][1]
-                second_peak = sorted_bins[3][1]
-                if abs(first_peak - second_peak) / first_peak < 0.2:
-                    return 'b_shaped'
-            
-            # الگوی d-shape (یک طرفه)
-            if sorted_bins[0][1] > sorted_bins[1][1] * 2:
-                return 'd_shaped'
-            
-            return 'developing'
-        except Exception as e:
-            logger.error(f"Error analyzing market profile structure: {e}")
-            return 'unknown'
-    
-    def advanced_momentum_analysis(self, data):
-        """تحلیل مومنتوم پیشرفته"""
-        try:
-            momentum = {}
-            
-            if PANDAS_TA_AVAILABLE:
-                # RSI با تنظیمات پیشرفته
-                momentum['rsi'] = {
-                    'standard': ta.rsi(data['Close'], length=14).iloc[-1],
-                    'fast': ta.rsi(data['Close'], length=7).iloc[-1],
-                    'slow': ta.rsi(data['Close'], length=21).iloc[-1],
-                    'divergence': self.detect_rsi_divergence(data)
-                }
-                
-                # شاخص کانال کالا (CCI)
-                cci = ta.cci(data['High'], data['Low'], data['Close'], length=20)
-                momentum['cci'] = {
-                    'value': cci.iloc[-1],
-                    'signal': 'overbought' if cci.iloc[-1] > 100 else 'oversold' if cci.iloc[-1] < -100 else 'neutral'
-                }
-                
-                # شاخص جهت‌دار میانگین (ADX)
-                adx = ta.adx(data['High'], data['Low'], data['Close'], length=14)
-                momentum['adx'] = {
-                    'value': adx['ADX_14'].iloc[-1],
-                    'trend_strength': 'strong' if adx['ADX_14'].iloc[-1] > 25 else 'weak',
-                    'direction': 'uptrend' if adx['DMP_14'].iloc[-1] > adx['DMN_14'].iloc[-1] else 'downtrend'
-                }
-                
-                # نوسان‌ساز استوکاستیک پیشرفته
-                stoch = ta.stoch(data['High'], data['Low'], data['Close'], k=14, d=3, smooth_k=3)
-                momentum['stochastic'] = {
-                    'k': stoch['STOCHk_14_3_3'].iloc[-1],
-                    'd': stoch['STOCHd_14_3_3'].iloc[-1],
-                    'signal': 'bullish_cross' if stoch['STOCHk_14_3_3'].iloc[-1] > stoch['STOCHd_14_3_3'].iloc[-1] and stoch['STOCHk_14_3_3'].iloc[-2] <= stoch['STOCHd_14_3_3'].iloc[-2] else 'bearish_cross' if stoch['STOCHk_14_3_3'].iloc[-1] < stoch['STOCHd_14_3_3'].iloc[-1] and stoch['STOCHk_14_3_3'].iloc[-2] >= stoch['STOCHd_14_3_3'].iloc[-2] else 'neutral'
-                }
-                
-                # شاخص قدرت نسبی وزنی (WRSI)
-                momentum['wrsi'] = ta.rsi(data['Close'], length=14).iloc[-1]  # ساده شده
-            
-            # ترکیب سیگنال‌های مومنتوم
-            momentum['combined_signal'] = self.combine_momentum_signals(momentum)
-            
-            return momentum
-        except Exception as e:
-            logger.error(f"Error in advanced momentum analysis: {e}")
-            return {}
-    
-    def detect_rsi_divergence(self, data):
-        """تشخیص واگرایی RSI پیشرفته"""
-        try:
-            if not PANDAS_TA_AVAILABLE:
-                return None
-            
-            rsi = ta.rsi(data['Close'])
-            divergence = {
-                'bullish': [],
-                'bearish': [],
-                'strength': 0
-            }
-            
-            # یافتن قله‌ها و دره‌ها
-            price_peaks, _ = find_peaks(data['Close'], distance=5)
-            rsi_peaks, _ = find_peaks(rsi, distance=5)
-            
-            price_troughs, _ = find_peaks(-data['Close'], distance=5)
-            rsi_troughs, _ = find_peaks(-rsi, distance=5)
-            
-            # بررسی واگرایی صعودی
-            for i in range(1, min(len(price_troughs), len(rsi_troughs))):
-                if (data['Close'].iloc[price_troughs[i]] < data['Close'].iloc[price_troughs[i-1]] and 
-                    rsi.iloc[rsi_troughs[i]] > rsi.iloc[rsi_troughs[i-1]]):
-                    divergence['bullish'].append({
-                        'price_point': price_troughs[i],
-                        'rsi_point': rsi_troughs[i],
-                        'strength': abs(rsi.iloc[rsi_troughs[i]] - rsi.iloc[rsi_troughs[i-1]])
-                    })
-            
-            # بررسی واگرایی نزولی
-            for i in range(1, min(len(price_peaks), len(rsi_peaks))):
-                if (data['Close'].iloc[price_peaks[i]] > data['Close'].iloc[price_peaks[i-1]] and 
-                    rsi.iloc[rsi_peaks[i]] < rsi.iloc[rsi_peaks[i-1]]):
-                    divergence['bearish'].append({
-                        'price_point': price_peaks[i],
-                        'rsi_point': rsi_peaks[i],
-                        'strength': abs(rsi.iloc[rsi_peaks[i]] - rsi.iloc[rsi_peaks[i-1]])
-                    })
-            
-            # محاسبه قدرت کلی واگرایی
-            if divergence['bullish']:
-                divergence['strength'] = max([d['strength'] for d in divergence['bullish']])
-            elif divergence['bearish']:
-                divergence['strength'] = max([d['strength'] for d in divergence['bearish']])
-            
-            return divergence
-        except Exception as e:
-            logger.error(f"Error detecting RSI divergence: {e}")
-            return None
-    
-    def combine_momentum_signals(self, momentum):
-        """ترکیب سیگنال‌های مومنتوم"""
-        try:
-            signals = []
-            
-            # سیگنال RSI
-            if 'rsi' in momentum:
-                rsi = momentum['rsi']['standard']
-                if rsi < 30:
-                    signals.append(('buy', 'rsi_oversold', 0.8))
-                elif rsi > 70:
-                    signals.append(('sell', 'rsi_overbought', 0.8))
-            
-            # سیگنال CCI
-            if 'cci' in momentum:
-                cci = momentum['cci']['value']
-                if cci < -100:
-                    signals.append(('buy', 'cci_oversold', 0.7))
-                elif cci > 100:
-                    signals.append(('sell', 'cci_overbought', 0.7))
-            
-            # سیگنال ADX
-            if 'adx' in momentum:
-                adx = momentum['adx']['value']
-                if adx > 25:
-                    signals.append(('trend', 'strong_trend', 0.6))
-            
-            # سیگنال استوکاستیک
-            if 'stochastic' in momentum:
-                stoch = momentum['stochastic']
-                if stoch['signal'] == 'bullish_cross' and stoch['k'] < 30:
-                    signals.append(('buy', 'stoch_bullish_cross', 0.7))
-                elif stoch['signal'] == 'bearish_cross' and stoch['k'] > 70:
-                    signals.append(('sell', 'stoch_bearish_cross', 0.7))
-            
-            # ترکیب سیگنال‌ها
-            buy_score = sum([s[2] for s in signals if s[0] == 'buy'])
-            sell_score = sum([s[2] for s in signals if s[0] == 'sell'])
-            
-            if buy_score > sell_score + 0.5:
-                return 'strong_buy'
-            elif buy_score > sell_score:
-                return 'buy'
-            elif sell_score > buy_score + 0.5:
-                return 'strong_sell'
-            elif sell_score > buy_score:
-                return 'sell'
-            else:
-                return 'neutral'
-        except Exception as e:
-            logger.error(f"Error combining momentum signals: {e}")
-            return 'neutral'
-    
-    def intermarket_analysis(self, data):
-        """تحلیل اینترمارکت"""
-        try:
-            intermarket = {}
-            
-            # همبستگی با شاخص‌های اصلی
-            intermarket['correlations'] = self.calculate_intermarket_correlations(data)
-            
-            # تحلیل جفت‌ارزهای مرتبط
-            intermarket['currency_pairs'] = self.analyze_related_pairs(data)
-            
-            # تأثیر اخبار اقتصادی
-            intermarket['economic_impact'] = self.analyze_economic_news_impact(data)
-            
-            # تحلیل کالاهای مرتبط
-            intermarket['commodities'] = self.analyze_commodity_correlation(data)
-            
-            return intermarket
-        except Exception as e:
-            logger.error(f"Error in intermarket analysis: {e}")
-            return {}
-    
-    def calculate_intermarket_correlations(self, data):
-        """محاسبه همبستگی با شاخص‌های دیگر"""
-        try:
-            correlations = {}
-            
-            # دریافت داده‌های شاخص‌های دیگر
-            indices = {
-                'S&P500': '^GSPC',
-                'Gold': 'GC=F',
-                'Oil': 'CL=F',
-                'DXY': 'DX-Y.NYB'
-            }
-            
-            for name, symbol in indices.items():
-                try:
-                    # دریافت داده شاخص
-                    index_data = yf.download(symbol, period='1y', interval='1d')
-                    if not index_data.empty:
-                        # محاسبه بازده‌ها
-                        asset_returns = data['Close'].pct_change().dropna()
-                        index_returns = index_data['Close'].pct_change().dropna()
-                        
-                        # هم‌ترازسازی داده‌ها
-                        min_length = min(len(asset_returns), len(index_returns))
-                        asset_returns = asset_returns[-min_length:]
-                        index_returns = index_returns[-min_length:]
-                        
-                        # محاسبه همبستگی
-                        correlation = pearsonr(asset_returns, index_returns)[0]
-                        correlations[name] = {
-                            'correlation': correlation,
-                            'strength': 'strong' if abs(correlation) > 0.7 else 'moderate' if abs(correlation) > 0.3 else 'weak',
-                            'direction': 'positive' if correlation > 0 else 'negative'
-                        }
-                except Exception as e:
-                    logger.warning(f"Error calculating correlation with {name}: {e}")
-                    correlations[name] = {'error': str(e)}
-            
-            return correlations
-        except Exception as e:
-            logger.error(f"Error calculating intermarket correlations: {e}")
-            return {}
-    
-    def analyze_related_pairs(self, data):
-        """تحلیل جفت‌ارزهای مرتبط"""
-        try:
-            related_pairs = {}
-            
-            # جفت‌ارزهای مرتبط با BTC
-            pairs = ['ETH-USD', 'BNB-USD', 'SOL-USD', 'XRP-USD']
-            
-            for pair in pairs:
-                try:
-                    pair_data = yf.download(pair, period='1y', interval='1d')
-                    if not pair_data.empty:
-                        # محاسبه همبستگی
-                        asset_returns = data['Close'].pct_change().dropna()
-                        pair_returns = pair_data['Close'].pct_change().dropna()
-                        
-                        min_length = min(len(asset_returns), len(pair_returns))
-                        asset_returns = asset_returns[-min_length:]
-                        pair_returns = pair_returns[-min_length:]
-                        
-                        correlation = pearsonr(asset_returns, pair_returns)[0]
-                        
-                        related_pairs[pair] = {
-                            'correlation': correlation,
-                            'strength': 'strong' if abs(correlation) > 0.7 else 'moderate' if abs(correlation) > 0.3 else 'weak',
-                            'direction': 'positive' if correlation > 0 else 'negative'
-                        }
-                except Exception as e:
-                    logger.warning(f"Error analyzing pair {pair}: {e}")
-                    related_pairs[pair] = {'error': str(e)}
-            
-            return related_pairs
-        except Exception as e:
-            logger.error(f"Error analyzing related pairs: {e}")
-            return {}
-    
-    def analyze_economic_news_impact(self, data):
-        """تحلیل تأثیر اخبار اقتصادی"""
-        try:
-            # این یک پیاده‌سازی ساده است
-            # در عمل نیاز به دریافت اخبار اقتصادی و تحلیل تأثیر آن‌هاست
-            
-            impact = {
-                'upcoming_events': [],
-                'recent_impact': [],
-                'volatility_forecast': 'normal'
-            }
-            
-            # دریافت اخبار اقتصادی (ساده شده)
-            # در واقعیت باید از APIهای خبری استفاده کرد
-            impact['upcoming_events'] = [
-                {'event': 'FOMC Meeting', 'date': '2023-11-01', 'expected_impact': 'high'},
-                {'event': 'CPI Release', 'date': '2023-11-10', 'expected_impact': 'high'},
-                {'event': 'NFP Report', 'date': '2023-11-03', 'expected_impact': 'high'}
-            ]
-            
-            # تحلیل تأثیر اخبار اخیر
-            impact['recent_impact'] = [
-                {'event': 'Fed Rate Decision', 'impact': 'positive', 'magnitude': 0.05},
-                {'event': 'Inflation Data', 'impact': 'negative', 'magnitude': 0.03}
-            ]
-            
-            return impact
-        except Exception as e:
-            logger.error(f"Error analyzing economic news impact: {e}")
-            return {}
-    
-    def analyze_commodity_correlation(self, data):
-        """تحلیل همبستگی با کالاها"""
-        try:
-            commodities = {}
-            
-            # کالاهای اصلی
-            commodity_symbols = {
-                'Gold': 'GC=F',
-                'Silver': 'SI=F',
-                'Oil': 'CL=F',
-                'Copper': 'HG=F'
-            }
-            
-            for name, symbol in commodity_symbols.items():
-                try:
-                    commodity_data = yf.download(symbol, period='1y', interval='1d')
-                    if not commodity_data.empty:
-                        # محاسبه همبستگی
-                        asset_returns = data['Close'].pct_change().dropna()
-                        commodity_returns = commodity_data['Close'].pct_change().dropna()
-                        
-                        min_length = min(len(asset_returns), len(commodity_returns))
-                        asset_returns = asset_returns[-min_length:]
-                        commodity_returns = commodity_returns[-min_length:]
-                        
-                        correlation = pearsonr(asset_returns, commodity_returns)[0]
-                        
-                        commodities[name] = {
-                            'correlation': correlation,
-                            'strength': 'strong' if abs(correlation) > 0.7 else 'moderate' if abs(correlation) > 0.3 else 'weak',
-                            'direction': 'positive' if correlation > 0 else 'negative'
-                        }
-                except Exception as e:
-                    logger.warning(f"Error analyzing commodity {name}: {e}")
-                    commodities[name] = {'error': str(e)}
-            
-            return commodities
-        except Exception as e:
-            logger.error(f"Error analyzing commodity correlation: {e}")
-            return {}
-    
-    def intelligent_alert_system(self, data):
-        """سیستم هشدار هوشمند"""
-        try:
-            alerts = {
-                'active': [],
-                'history': [],
-                'confluence': []
-            }
-            
-            # هشدار برای هم‌رسایی چند تایم‌فریم
-            mtf_confluence = self.check_mtf_confluence(data)
-            if mtf_confluence:
-                alerts['confluence'].append(mtf_confluence)
-            
-            # هشدار برای شکست سطوح کلیدی
-            level_break = self.check_key_level_break(data)
-            if level_break:
-                alerts['active'].append(level_break)
-            
-            # هشدار برای تشکیل الگوهای مهم
-            pattern_alert = self.check_pattern_formation(data)
-            if pattern_alert:
-                alerts['active'].append(pattern_alert)
-            
-            # هشدار برای واگرایی
-            divergence_alert = self.check_divergence_alert(data)
-            if divergence_alert:
-                alerts['active'].append(divergence_alert)
-            
-            # هشدار برای حجم غیرعادی
-            volume_alert = self.check_unusual_volume(data)
-            if volume_alert:
-                alerts['active'].append(volume_alert)
-            
-            return alerts
-        except Exception as e:
-            logger.error(f"Error in intelligent alert system: {e}")
-            return {}
-    
-    def check_mtf_confluence(self, data):
-        """بررسی هم‌رسایی چند تایم‌فریم"""
-        try:
-            mtf_analysis = self.multi_timeframe_analysis(data)
-            
-            # بررسی هم‌رسایی صعودی
-            bullish_count = 0
-            bearish_count = 0
-            
-            for tf, analysis in mtf_analysis.items():
-                if isinstance(analysis, dict) and 'trend' in analysis:
-                    if analysis['trend'].get('direction') == 'uptrend':
-                        bullish_count += 1
-                    elif analysis['trend'].get('direction') == 'downtrend':
-                        bearish_count += 1
-            
-            # اگر 4 تایم‌فریم یا بیشتر هم‌راستا باشند
-            if bullish_count >= 4:
-                return {
-                    'type': 'mtf_confluence',
-                    'direction': 'bullish',
-                    'strength': 'strong',
-                    'timeframes': bullish_count
-                }
-            elif bearish_count >= 4:
-                return {
-                    'type': 'mtf_confluence',
-                    'direction': 'bearish',
-                    'strength': 'strong',
-                    'timeframes': bearish_count
-                }
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error checking MTF confluence: {e}")
-            return None
-    
-    def check_key_level_break(self, data):
-        """بررسی شکست سطوح کلیدی"""
-        try:
-            # یافتن سطوح کلیدی
-            key_levels = self.find_key_levels(data)
-            
-            if not key_levels:
-                return None
-            
-            current_price = data['Close'].iloc[-1]
-            
-            # بررسی شکست مقاومت
-            for level in key_levels[-5:]:  # 5 سطح آخر
-                if current_price > level * 1.02:  # شکست با 2% فاصله
-                    return {
-                        'type': 'key_level_break',
-                        'level_type': 'resistance',
-                        'level': level,
-                        'strength': 'strong' if data['Volume'].iloc[-1] > data['Volume'].mean() * 1.5 else 'weak'
-                    }
-            
-            # بررسی شکست حمایت
-            for level in key_levels[:5]:  # 5 سطح اول
-                if current_price < level * 0.98:  # شکست با 2% فاصله
-                    return {
-                        'type': 'key_level_break',
-                        'level_type': 'support',
-                        'level': level,
-                        'strength': 'strong' if data['Volume'].iloc[-1] > data['Volume'].mean() * 1.5 else 'weak'
-                    }
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error checking key level break: {e}")
-            return None
-    
-    def check_pattern_formation(self, data):
-        """بررسی تشکیل الگوهای مهم"""
-        try:
-            patterns = self.identify_price_patterns(data)
-            
-            # بررسی الگوهای معتبر
-            valid_patterns = []
-            
-            if patterns.get('head_and_shoulders'):
-                valid_patterns.append({
-                    'type': 'head_and_shoulders',
-                    'reliability': 'high'
-                })
-            
-            if patterns.get('double_top_bottom'):
-                valid_patterns.append({
-                    'type': 'double_top_bottom',
-                    'reliability': 'medium'
-                })
-            
-            if patterns.get('triangle'):
-                valid_patterns.append({
-                    'type': 'triangle',
-                    'reliability': 'medium'
-                })
-            
-            if valid_patterns:
-                return {
-                    'type': 'pattern_formation',
-                    'patterns': valid_patterns,
-                    'urgency': 'high' if len(valid_patterns) > 1 else 'medium'
-                }
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error checking pattern formation: {e}")
-            return None
-    
-    def check_divergence_alert(self, data):
-        """بررسی هشدار واگرایی"""
-        try:
-            divergence = self.divergence_analysis(data)
-            
-            # بررسی واگرایی RSI
-            if 'rsi' in divergence and divergence['rsi'].get('bullish'):
-                return {
-                    'type': 'divergence',
-                    'indicator': 'RSI',
-                    'direction': 'bullish',
-                    'strength': divergence['rsi']['strength']
-                }
-            elif 'rsi' in divergence and divergence['rsi'].get('bearish'):
-                return {
-                    'type': 'divergence',
-                    'indicator': 'RSI',
-                    'direction': 'bearish',
-                    'strength': divergence['rsi']['strength']
-                }
-            
-            # بررسی واگرایی MACD
-            if 'macd' in divergence and divergence['macd'].get('bullish'):
-                return {
-                    'type': 'divergence',
-                    'indicator': 'MACD',
-                    'direction': 'bullish',
-                    'strength': divergence['macd']['strength']
-                }
-            elif 'macd' in divergence and divergence['macd'].get('bearish'):
-                return {
-                    'type': 'divergence',
-                    'indicator': 'MACD',
-                    'direction': 'bearish',
-                    'strength': divergence['macd']['strength']
-                }
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error checking divergence alert: {e}")
-            return None
-    
-    def check_unusual_volume(self, data):
-        """بررسی حجم غیرعادی"""
-        try:
-            current_volume = data['Volume'].iloc[-1]
-            avg_volume = data['Volume'].mean()
-            volume_std = data['Volume'].std()
-            
-            # حجم غیرعادی: بیشتر از 2 انحراف معیار از میانگین
-            if current_volume > avg_volume + 2 * volume_std:
-                return {
-                    'type': 'unusual_volume',
-                    'volume': current_volume,
-                    'avg_volume': avg_volume,
-                    'ratio': current_volume / avg_volume,
-                    'significance': 'high' if current_volume > avg_volume * 3 else 'medium'
-                }
-            
-            return None
-        except Exception as e:
-            logger.error(f"Error checking unusual volume: {e}")
-            return None
-    
-    def ml_technical_analysis(self, data):
-        """یادگیری ماشین برای تحلیل تکنیکال"""
-        try:
-            ml_analysis = {}
-            
-            # پیش‌بینی الگوهای قیمت با شبکه‌های عصبی
-            ml_analysis['pattern_prediction'] = self.neural_network_pattern_prediction(data)
-            
-            # بهینه‌سازی استراتژی با یادگیری تقویتی
-            ml_analysis['strategy_optimization'] = self.reinforcement_learning_optimization(data)
-            
-            # تحلیل احساسات بازار با NLP
-            ml_analysis['sentiment_analysis'] = self.nlp_sentiment_analysis(data)
-            
-            # ترکیب نتایج ML
-            ml_analysis['combined_signal'] = self.combine_ml_signals(ml_analysis)
-            
-            return ml_analysis
-        except Exception as e:
-            logger.error(f"Error in ML technical analysis: {e}")
-            return {}
-    
-    def neural_network_pattern_prediction(self, data):
-        """پیش‌بینی الگوهای قیمت با شبکه‌های عصبی"""
-        try:
-            if not TF_AVAILABLE:
-                return {'error': 'TensorFlow not available'}
-            
-            # آماده‌سازی داده‌ها
-            df = data.copy()
-            df['Target'] = df['Close'].shift(-1)
-            df = df.dropna()
-            
-            if len(df) < 100:
-                return {'error': 'Not enough data'}
-            
-            # ویژگی‌ها
-            features = ['Open', 'High', 'Low', 'Close', 'Volume']
-            X = df[features].values
-            y = df['Target'].values
-            
-            # نرمال‌سازی داده‌ها
-            from sklearn.preprocessing import MinMaxScaler
-            scaler = MinMaxScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            # تقسیم داده‌ها
-            X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-            
-            # ساخت مدل
-            model = Sequential([
-                Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
-                Dense(32, activation='relu'),
-                Dense(16, activation='relu'),
-                Dense(1)
-            ])
-            
-            model.compile(optimizer='adam', loss='mse')
-            
-            # آموزش مدل
-            model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0)
-            
-            # پیش‌بینی
-            predictions = model.predict(X_test)
-            
-            # محاسبه دقت
-            mse = mean_squared_error(y_test, predictions)
-            
-            return {
-                'model_type': 'neural_network',
-                'mse': mse,
-                'last_prediction': float(predictions[-1][0]),
-                'accuracy': 1 - (mse / np.var(y_test))
-            }
-        except Exception as e:
-            logger.error(f"Error in neural network pattern prediction: {e}")
-            return {'error': str(e)}
-    
-    def reinforcement_learning_optimization(self, data):
-        """بهینه‌سازی استراتژی با یادگیری تقویتی"""
-        try:
-            # این یک پیاده‌سازی ساده شده است
-            # در عمل نیاز به کتابخانه‌های تخصصی مثل Stable Baselines است
-            
-            # تعریف فضای اقدامات
-            actions = ['buy', 'sell', 'hold']
-            
-            # تعریف پاداش‌ها
-            def calculate_reward(action, price_change):
-                if action == 'buy' and price_change > 0:
-                    return 1.0
-                elif action == 'sell' and price_change < 0:
-                    return 1.0
-                elif action == 'hold':
-                    return 0.1
-                else:
-                    return -1.0
-            
-            # شبیه‌سازی ساده
-            total_reward = 0
-            for i in range(1, len(data)):
-                price_change = (data['Close'].iloc[i] - data['Close'].iloc[i-1]) / data['Close'].iloc[i-1]
-                
-                # انتخاب اقدام ساده (تصادفی)
-                action = np.random.choice(actions)
-                reward = calculate_reward(action, price_change)
-                total_reward += reward
-            
-            return {
-                'model_type': 'reinforcement_learning',
-                'total_reward': total_reward,
-                'average_reward': total_reward / len(data),
-                'best_action': 'buy' if total_reward > 0 else 'sell'
-            }
-        except Exception as e:
-            logger.error(f"Error in reinforcement learning optimization: {e}")
-            return {'error': str(e)}
-    
-    def nlp_sentiment_analysis(self, data):
-        """تحلیل احساسات بازار با NLP"""
-        try:
-            # دریافت اخبار مرتبط
-            news = asyncio.run(self.fetch_news_from_multiple_sources())
-            
-            if not news:
-                return {'error': 'No news available'}
-            
-            # تحلیل احساسات با NLP
-            sentiments = []
-            
-            for news_item in news:
-                text = f"{news_item['title']} {news_item['content']}"
-                
-                # تحلیل ساده با کتابخانه‌های موجود
-                try:
-                    from textblob import TextBlob
-                    blob = TextBlob(text)
-                    sentiment = blob.sentiment.polarity
-                    sentiments.append(sentiment)
-                except:
-                    # استفاده از تحلیل داخلی
-                    sentiment = self.analyze_text_sentiment(text)
-                    sentiments.append(sentiment)
-            
-            # محاسبه میانگین احساسات
-            avg_sentiment = np.mean(sentiments)
-            
-            return {
-                'model_type': 'nlp_sentiment',
-                'average_sentiment': avg_sentiment,
-                'sentiment_distribution': {
-                    'positive': len([s for s in sentiments if s > 0.1]),
-                    'negative': len([s for s in sentiments if s < -0.1]),
-                    'neutral': len([s for s in sentiments if -0.1 <= s <= 0.1])
-                },
-                'confidence': abs(avg_sentiment)
-            }
-        except Exception as e:
-            logger.error(f"Error in NLP sentiment analysis: {e}")
-            return {'error': str(e)}
-    
-    def combine_ml_signals(self, ml_analysis):
-        """ترکیب سیگنال‌های یادگیری ماشین"""
-        try:
-            signals = []
-            
-            # سیگنال شبکه عصبی
-            if 'pattern_prediction' in ml_analysis and 'last_prediction' in ml_analysis['pattern_prediction']:
-                pred = ml_analysis['pattern_prediction']['last_prediction']
-                current_price = self.get_market_data('BTC')['price']  # فرض برای BTC
-                if pred > current_price * 1.02:
-                    signals.append(('buy', 'neural_network', 0.8))
-                elif pred < current_price * 0.98:
-                    signals.append(('sell', 'neural_network', 0.8))
-            
-            # سیگنال یادگیری تقویتی
-            if 'strategy_optimization' in ml_analysis and 'best_action' in ml_analysis['strategy_optimization']:
-                action = ml_analysis['strategy_optimization']['best_action']
-                reward = ml_analysis['strategy_optimization']['average_reward']
-                signals.append((action, 'reinforcement_learning', min(abs(reward), 1.0)))
-            
-            # سیگنال احساسات
-            if 'sentiment_analysis' in ml_analysis and 'average_sentiment' in ml_analysis['sentiment_analysis']:
-                sentiment = ml_analysis['sentiment_analysis']['average_sentiment']
-                if sentiment > 0.3:
-                    signals.append(('buy', 'sentiment', abs(sentiment)))
-                elif sentiment < -0.3:
-                    signals.append(('sell', 'sentiment', abs(sentiment)))
-            
-            # ترکیب سیگنال‌ها
-            buy_score = sum([s[2] for s in signals if s[0] == 'buy'])
-            sell_score = sum([s[2] for s in signals if s[0] == 'sell'])
-            
-            if buy_score > sell_score + 0.5:
-                return 'strong_buy'
-            elif buy_score > sell_score:
-                return 'buy'
-            elif sell_score > buy_score + 0.5:
-                return 'strong_sell'
-            elif sell_score > buy_score:
-                return 'sell'
-            else:
-                return 'neutral'
-        except Exception as e:
-            logger.error(f"Error combining ML signals: {e}")
-            return 'neutral'
-    
-    def analyze_opportunities(self, historical_data, market_data, sentiment):
-        """تحلیل فرصت‌های معاملاتی"""
-        try:
-            opportunities = []
-            
-            # تحلیل فاصله از میانگین متحرک
-            current_price = market_data.get('price', 0)
-            sma_20 = historical_data['Close'].rolling(20).mean().iloc[-1]
-            
-            if current_price < sma_20 * 0.95:  # قیمت زیر میانگین متحرک
-                opportunities.append({
-                    'type': 'buy',
-                    'reason': 'زیر میانگین متحرک 20 روزه',
-                    'strength': min((sma_20 - current_price) / current_price, 1.0)
-                })
-            elif current_price > sma_20 * 1.05:  # قیمت بالای میانگین متحرک
-                opportunities.append({
-                    'type': 'sell',
-                    'reason': 'بالای میانگین متحرک 20 روزه',
-                    'strength': min((current_price - sma_20) / current_price, 1.0)
-                })
-            
-            # تحلیل بر اساس احساسات
-            sentiment_score = sentiment.get('average_sentiment', 0)
-            if sentiment_score > 0.5:
-                opportunities.append({
-                    'type': 'buy',
-                    'reason': 'احساسات مثبت بازار',
-                    'strength': sentiment_score
-                })
-            elif sentiment_score < -0.5:
-                opportunities.append({
-                    'type': 'sell',
-                    'reason': 'احساسات منفی بازار',
-                    'strength': abs(sentiment_score)
-                })
-            
-            return opportunities
-        except Exception as e:
-            logger.error(f"Error analyzing opportunities: {e}")
-            return []
-    
-    def analyze_market_timing(self, historical_data):
-        """تحلیل زمان‌بندی بازار"""
-        try:
-            # تحلیل چرخه‌های بازار
-            returns = historical_data['Close'].pct_change().dropna()
-            
-            # محاسبه نوسانات
-            volatility = returns.rolling(30).std().iloc[-1] * np.sqrt(252)
-            
-            # تحلیل فاز بازار
-            if volatility > 0.3:
-                phase = 'نوسانی'
-            elif returns.mean() > 0:
-                phase = 'صعودی'
-            else:
-                phase = 'نزولی'
-            
-            return {
-                'market_phase': phase,
-                'volatility': volatility,
-                'recommended_action': 'احتیاط' if volatility > 0.2 else 'معامله'
-            }
-        except Exception as e:
-            logger.error(f"Error in market timing analysis: {e}")
-            return {'market_phase': 'unknown', 'volatility': 0, 'recommended_action': 'hold'}
-    
-    def analyze_price_behavior(self, historical_data):
-        """تحلیل رفتار قیمت"""
-        try:
-            # تحلیل الگوهای رفتاری
-            returns = historical_data['Close'].pct_change().dropna()
-            
-            # محاسبه آمارهای رفتاری
-            behavior = {
-                'avg_return': returns.mean(),
-                'volatility': returns.std(),
-                'skewness': returns.skew(),
-                'kurtosis': returns.kurtosis(),
-                'max_gain': returns.max(),
-                'max_loss': returns.min(),
-                'positive_days': len(returns[returns > 0]) / len(returns),
-                'negative_days': len(returns[returns < 0]) / len(returns)
-            }
-            
-            # تحلیل شخصیت قیمت
-            if behavior['positive_days'] > 0.6:
-                personality = 'صعودی'
-            elif behavior['negative_days'] > 0.6:
-                personality = 'نزولی'
-            else:
-                personality = 'طبیعی'
-            
-            behavior['personality'] = personality
-            
-            return behavior
-        except Exception as e:
-            logger.error(f"Error in price behavior analysis: {e}")
-            return {}
-    
-    def advanced_supply_demand(self, symbol):
-        """تحلیل عرضه و تقاضا"""
-        try:
-            # دریافت داده‌های حجمی
-            market_data = asyncio.run(self.get_market_data(symbol))
-            
-            # محاسبه نسبت عرضه به تقاضا
-            volume = market_data.get('volume_24h', 0)
-            price = market_data.get('price', 1)
-            
-            if volume == 0 or price == 0:
-                return {'imbalance': 0, 'trend': 'unknown'}
-            
-            # تحلیل ساده عرضه و تقاضا
-            # اینجا باید از داده‌های سفارش‌گذاری استفاده کرد، ولی به دلیل محدودیت‌ها از حجم استفاده می‌کنیم
-            avg_volume = volume  # در حالت واقعی باید میانگین حجم را محاسبه کرد
-            
-            if volume > avg_volume * 1.2:
-                trend = 'تقاضا بالا'
-                imbalance = 0.8
-            elif volume < avg_volume * 0.8:
-                trend = 'عرضه بالا'
-                imbalance = -0.8
-            else:
-                trend = 'تعادل'
-                imbalance = 0
-            
-            return {
-                'imbalance': imbalance,
-                'trend': trend,
-                'volume_ratio': volume / avg_volume if avg_volume != 0 else 1
-            }
-        except Exception as e:
-            logger.error(f"Error in supply/demand analysis: {e}")
-            return {'imbalance': 0, 'trend': 'unknown'}
-    
-    def calculate_signal_score(self, analysis):
-        """محاسبه امتیاز سیگنال نهایی"""
-        try:
-            # وزن‌ها برای هر بخش تحلیل
-            weights = {
-                'technical': 0.3,
-                'sentiment': 0.2,
-                'elliott': 0.1,
-                'supply_demand': 0.1,
-                'ai_analysis': 0.3
-            }
-            
-            scores = {}
-            
-            # امتیاز تحلیل تکنیکال
-            tech = analysis.get('technical', {})
-            if tech:
-                rsi = tech.get('rsi', {})
-                macd = tech.get('macd', {})
-                bb = tech.get('bollinger', {})
-                
-                tech_score = 0.5  # امتیاز پایه
-                
-                # RSI
-                if '14' in rsi:
-                    if rsi['14'] < 30:
-                        tech_score += 0.2  # اشباع فروش
-                    elif rsi['14'] > 70:
-                        tech_score -= 0.2  # اشباع خرید
-                
-                # MACD
-                if 'histogram' in macd:
-                    if macd['histogram'] > 0:
-                        tech_score += 0.1
-                    else:
-                        tech_score -= 0.1
-                
-                # Bollinger Bands
-                if 'position' in bb:
-                    if bb['position'] == 'below':
-                        tech_score += 0.1
-                    elif bb['position'] == 'above':
-                        tech_score -= 0.1
-                
-                scores['technical'] = max(0, min(1, tech_score))
-            else:
-                scores['technical'] = 0.5
-            
-            # امتیاز احساسات
-            sentiment = analysis.get('sentiment', {})
-            if sentiment:
-                sentiment_score = sentiment.get('average_sentiment', 0)
-                scores['sentiment'] = (sentiment_score + 1) / 2  # تبدیل به 0-1
-            else:
-                scores['sentiment'] = 0.5
-            
-            # امتیاز امواج الیوت
-            elliott = analysis.get('elliott', {})
-            if elliott.get('current_pattern') == 'impulse':
-                scores['elliott'] = 0.7
-            elif elliott.get('current_pattern') == 'corrective':
-                scores['elliott'] = 0.3
-            else:
-                scores['elliott'] = 0.5
-            
-            # امتیاز عرضه و تقاضا
-            supply_demand = analysis.get('supply_demand', {})
-            if supply_demand:
-                imbalance = supply_demand.get('imbalance', 0)
-                scores['supply_demand'] = (imbalance + 1) / 2  # تبدیل به 0-1
-            else:
-                scores['supply_demand'] = 0.5
-            
-            # امتیاز تحلیل هوش مصنوعی
-            ai = analysis.get('ai_analysis', {})
-            if ai:
-                risk = ai.get('risk_analysis', {}).get('risk_score', 0.5)
-                opportunities = ai.get('opportunities', [])
-                
-                ai_score = 0.5
-                
-                # ریسک
-                ai_score -= risk * 0.3
-                
-                # فرصت‌ها
-                for opp in opportunities:
-                    if opp['type'] == 'buy':
-                        ai_score += opp['strength'] * 0.2
-                    elif opp['type'] == 'sell':
-                        ai_score -= opp['strength'] * 0.2
-                
-                scores['ai_analysis'] = max(0, min(1, ai_score))
-            else:
-                scores['ai_analysis'] = 0.5
-            
-            # محاسبه امتیاز نهایی
-            final_score = sum(scores[key] * weights[key] for key in weights.keys())
-            
-            return max(0, min(1, final_score))
-        except Exception as e:
-            logger.error(f"Error calculating signal score: {e}")
-            return 0.5
-    
-    def start_scheduled_tasks(self):
-        """شروع وظایف زمان‌بندی شده"""
-        # در Railway بهتر است از Cron Jobs استفاده شود
-        # این تابع برای تست محلی است
-        schedule.every(10).minutes.do(self.update_market_data)
-        schedule.every().hour.do(self.generate_signals)
-        schedule.every().day.at("08:00").do(self.send_daily_report)
-    
-    def update_market_data(self):
-        """به‌روزرسانی داده‌های بازار"""
-        try:
-            symbols = ["BTC", "ETH", "BNB", "SOL", "XRP"]
-            for symbol in symbols:
-                data = asyncio.run(self.get_market_data(symbol))
-                logger.info(f"Updated data for {symbol}: {data['price']}")
-        except Exception as e:
-            logger.error(f"Error updating market data: {e}")
-    
-    def generate_signals(self):
-        """تولید سیگنال‌های معاملاتی"""
-        try:
-            symbols = ["BTC", "ETH", "BNB", "SOL", "XRP"]
-            for symbol in symbols:
-                analysis = asyncio.run(self.perform_advanced_analysis(symbol))
-                if analysis['signal'] != 'HOLD':
-                    logger.warning(f"Signal for {symbol}: {analysis['signal']} (Confidence: {analysis['confidence']:.2f})")
-        except Exception as e:
-            logger.error(f"Error generating signals: {e}")
-    
-    def send_daily_report(self):
-        """ارسال گزارش روزانه"""
-        try:
-            # این تابع باید با تلگرام پیاده‌سازی شود
-            logger.info("Daily report sent")
-        except Exception as e:
-            logger.error(f"Error sending daily report: {e}")
-
-# توابع تلگرام
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پاسخ به دستور /start"""
-    await update.message.reply_text(
-        "🤖 ربات تحلیلگر بازار ارز دیجیتال\n\n"
-        "دستورات:\n"
-        "/analyze [symbol] - تحلیل نماد\n"
-        "/news [symbol] - اخبار مرتبط\n"
-        "/signals - سیگنال‌های فعال\n"
-        "/help - راهنما"
-    )
-
-async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تحلیل نماد"""
-    try:
-        symbol = context.args[0].upper() if context.args else "BTC"
-        
-        # ایجاد نمونه از ربات
-        bot = AdvancedTradingBot()
-        
-        # انجام تحلیل
-        analysis = await bot.perform_advanced_analysis(symbol)
-        
-        # فرمت‌بندی پاسخ
-        response = f"📊 تحلیل {symbol}:\n\n"
-        response += f"💰 قیمت: ${analysis['market_data']['price']:,.2f}\n"
-        response += f"📈 تغییر 24h: {analysis['market_data']['price_change_24h']:.2f}%\n"
-        response += f"🎯 سیگنال: {analysis['signal']}\n"
-        response += f"🔒 اطمینان: {analysis['confidence']:.0%}\n\n"
-        
-        # افزودن تحلیل تکنیکال
-        tech = analysis.get('technical', {})
-        if tech:
-            response += "📈 تحلیل تکنیکال:\n"
-            if 'rsi' in tech:
-                response += f"  RSI: {tech['rsi']:.1f}\n"
-            if 'macd' in tech:
-                response += f"  MACD: {tech['macd']['value']:.2f}\n"
-            if 'bollinger' in tech:
-                response += f"  بولینگر: {tech['bollinger']['position']}\n"
-        
-        # افزودن تحلیل احساسات
-        sentiment = analysis.get('sentiment', {})
-        if sentiment:
-            response += f"\n😊 احساسات: {sentiment['average_sentiment']:.2f}\n"
-        
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Error in analyze command: {e}")
-        await update.message.reply_text("خطا در تحلیل. لطفاً دوباره تلاش کنید.")
-
-async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت اخبار"""
-    try:
-        symbol = context.args[0].upper() if context.args else None
-        
-        # ایجاد نمونه از ربات
-        bot = AdvancedTradingBot()
-        
-        # دریافت اخبار
-        news = await bot.fetch_news_from_multiple_sources(symbol)
-        
-        # فرمت‌بندی پاسخ
-        response = "📰 آخرین اخبار:\n\n"
-        for item in news[:5]:  # حداکثر 5 خبر
-            response += f"• {item['title']}\n"
-            response += f"  {item['source']} - {item['published_at'].strftime('%Y-%m-%d')}\n\n"
-        
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Error in news command: {e}")
-        await update.message.reply_text("خطا در دریافت اخبار. لطفاً دوباره تلاش کنید.")
-
-async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت سیگنال‌های فعال"""
-    try:
-        # ایجاد نمونه از ربات
-        bot = AdvancedTradingBot()
-        
-        # دریافت سیگنال‌ها
-        symbols = ["BTC", "ETH", "BNB", "SOL", "XRP"]
-        signals = []
-        
-        for symbol in symbols:
-            analysis = await bot.perform_advanced_analysis(symbol)
-            if analysis['signal'] != 'HOLD':
-                signals.append({
-                    'symbol': symbol,
-                    'signal': analysis['signal'],
-                    'confidence': analysis['confidence'],
-                    'price': analysis['market_data']['price']
-                })
-        
-        # فرمت‌بندی پاسخ
-        if signals:
-            response = "🚨 سیگنال‌های فعال:\n\n"
-            for sig in signals:
-                response += f"• {sig['symbol']}: {sig['signal']}\n"
-                response += f"  قیمت: ${sig['price']:,.2f}\n"
-                response += f"  اطمینان: {sig['confidence']:.0%}\n\n"
-        else:
-            response = "هیچ سیگنال فعالی وجود ندارد."
-        
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Error in signals command: {e}")
-        await update.message.reply_text("خطا در دریافت سیگنال‌ها. لطفاً دوباره تلاش کنید.")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش راهنما"""
-    help_text = """
-    🤖 راهنمای ربات تحلیلگر بازار ارز دیجیتال
-    
-    دستورات:
-    /start - شروع ربات
-    /analyze [symbol] - تحلیل نماد (مثال: /analyze BTC)
-    /news [symbol] - اخبار مرتبط (مثال: /news ETH)
-    /signals - سیگنال‌های فعال
-    /help - نمایش این راهنما
-    
-    نمادهای پشتیبانی شده:
-    BTC, ETH, BNB, SOL, XRP, ADA, DOT, DOGE, AVAX, MATIC
-    """
-    await update.message.reply_text(help_text)
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پاسخ به پیام‌های متنی"""
-    try:
-        text = update.message.text
-        
-        # ایجاد نمونه از ربات
-        bot = AdvancedTradingBot()
-        
-        # تحلیل احساسات متن
-        sentiment = bot.analyze_text_sentiment(text)
-        
-        # پاسخ بر اساس احساسات
-        if sentiment > 0.5:
-            response = "😊 احساسات مثبت تشخیص داده شد!"
-        elif sentiment < -0.5:
-            response = "😔 احساسات منفی تشخیص داده شد!"
-        else:
-            response = "😐 احساسات خنثی تشخیص داده شد."
-        
-        response += f"\nامتیاز احساسات: {sentiment:.2f}"
-        
-        await update.message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Error handling message: {e}")
-        await update.message.reply_text("خطا در پردازش پیام.")
-
-# تابع اصلی
-async def main():
-    """تابع اصلی برای اجرای ربات"""
-    try:
-        # ایجاد نمونه از ربات
-        bot = AdvancedTradingBot()
-        
-        # تنظیمات تلگرام
-        application = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
-        
-        # اضافه کردن هندلرها
-        application.add_handler(CommandHandler("start", start_command))
-        application.add_handler(CommandHandler("analyze", analyze_command))
-        application.add_handler(CommandHandler("news", news_command))
-        application.add_handler(CommandHandler("signals", signals_command))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        # اجرای ربات
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
-        
-        logger.info("Bot started successfully")
-        
-        # اجرای وظایف زمان‌بندی شده
-        while True:
-            await schedule_tasks(bot)
-            await asyncio.sleep(60)  # بررسی هر 60 ثانیه
-            
-    except Exception as e:
-        logger.error(f"Error in main function: {e}")
-
-async def schedule_tasks(bot):
-    """وظایف زمان‌بندی شده"""
-    try:
-        # به‌روزرسانی داده‌ها
-        symbols = ["BTC", "ETH", "BNB", "SOL", "XRP"]
-        for symbol in symbols:
-            data = await bot.get_market_data(symbol)
-            logger.info(f"Updated data for {symbol}: {data['price']}")
-        
-        # تحلیل خودکار
-        for symbol in symbols:
-            analysis = await bot.perform_advanced_analysis(symbol)
-            if analysis['signal'] != 'HOLD':
-                logger.warning(f"Signal for {symbol}: {analysis['signal']}")
-    except Exception as e:
-        logger.error(f"Error in scheduled tasks: {e}")
-
-if __name__ == "__main__":
-    # اجرای برنامه
-    asyncio.run(main())
+            poc_bin = max(tpo
