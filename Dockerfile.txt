@@ -19,8 +19,5 @@ COPY . .
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# افشای پورت
-EXPOSE 8080
-
 # دستور اجرای برنامه
 CMD ["python", "main.py"]

@@ -1,3 +1,4 @@
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import logging
@@ -14,28 +15,28 @@ def setup_handlers(application, bot):
     application.add_handler(CommandHandler("help", help_command))
     
     # هندلر دستور /analyze
-    application.add_handler(CommandHandler("analyze", analyze_command, bot))
+    application.add_handler(CommandHandler("analyze", analyze_command))
     
     # هندلر دستور /price
-    application.add_handler(CommandHandler("price", price_command, bot))
+    application.add_handler(CommandHandler("price", price_command))
     
     # هندلر دستور /news
-    application.add_handler(CommandHandler("news", news_command, bot))
+    application.add_handler(CommandHandler("news", news_command))
     
     # هندلر دستور /signals
-    application.add_handler(CommandHandler("signals", signals_command, bot))
+    application.add_handler(CommandHandler("signals", signals_command))
     
     # هندلر دستور /watchlist
-    application.add_handler(CommandHandler("watchlist", watchlist_command, bot))
+    application.add_handler(CommandHandler("watchlist", watchlist_command))
     
     # هندلر دستور /settings
-    application.add_handler(CommandHandler("settings", settings_command, bot))
+    application.add_handler(CommandHandler("settings", settings_command))
     
     # هندلر پیام‌های متنی
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler, bot))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
     # هندلر callback query
-    application.add_handler(CallbackQueryHandler(callback_query_handler, bot))
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,8 +71,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text)
 
 
-async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /analyze"""
+    bot = context.bot
     # استخراج نماد از پیام
     if context.args:
         symbol = context.args[0].upper()
@@ -96,8 +98,9 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bo
         await processing_message.edit_text("متأسفانه در تحلیل خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
 
-async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /price"""
+    bot = context.bot
     # استخراج نماد از پیام
     if context.args:
         symbol = context.args[0].upper()
@@ -127,8 +130,9 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot)
         await processing_message.edit_text("متأسفانه در دریافت قیمت خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
 
-async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /news"""
+    bot = context.bot
     # استخراج نماد از پیام
     if context.args:
         symbol = context.args[0].upper()
@@ -163,7 +167,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
         await processing_message.edit_text("متأسفانه در دریافت اخبار خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
 
-async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /signals"""
     # ارسال پیام در حال پردازش
     processing_message = await update.message.reply_text("در حال دریافت سیگنال‌های معاملاتی...")
@@ -195,7 +199,7 @@ async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bo
         await processing_message.edit_text("متأسفانه در دریافت سیگنال‌ها خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
 
-async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /watchlist"""
     user_id = update.effective_user.id
     
@@ -220,7 +224,7 @@ async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
 
 
-async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /settings"""
     user_id = update.effective_user.id
     
@@ -242,8 +246,9 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE, b
     await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
 
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر پیام‌های متنی"""
+    bot = context.bot
     text = update.message.text
     
     # اگر متن یک نماد ارز است
@@ -269,12 +274,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, bo
         await update.message.reply_text("لطفاً یک نماد ارز معتبر وارد کنید یا از دستور /help استفاده کنید.")
 
 
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, bot):
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر callback query"""
     query = update.callback_query
     query.answer()
     
     data = query.data
+    bot = context.bot
     
     if data.startswith("analyze_"):
         symbol = data.split("_")[1]
