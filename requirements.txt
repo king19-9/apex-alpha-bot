@@ -15,8 +15,8 @@ tensorflow==2.13.0
 TA-Lib==0.4.25
 pandas-ta==0.3.14b
 PyWavelets==1.4.1
-lightgbm==4.0.0
-xgboost==1.7.7
+lightgbm==3.3.5
+xgboost==1.7.6
 prophet==1.1.4
 statsmodels==0.14.0
 seaborn==0.12.2
