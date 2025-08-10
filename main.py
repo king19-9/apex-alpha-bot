@@ -247,7 +247,7 @@ class AdvancedTradingBot:
             'cup_and_handle': ['الگوی فنجان و دسته', 'سیگنال خرید'],
             'rising_wedge': ['گوه صعودی', 'سیگنال فروش'],
             'falling_wedge': ['گوه نزولی', 'سیگنال خرید']
-        ]
+        }
     
     def create_tables(self):
         """ایجاد جداول پایگاه داده"""
