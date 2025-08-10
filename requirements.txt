@@ -11,14 +11,6 @@ asyncio-throttle==1.0.2
 scikit-learn==1.3.0
 scipy==1.11.1
 psycopg2-binary==2.9.7
-tensorflow==2.13.0
 TA-Lib==0.4.25
 pandas-ta==0.3.14b
-PyWavelets==1.4.1
-lightgbm==3.3.5
-xgboost==1.7.6
-prophet==1.1.4
-statsmodels==0.14.0
-seaborn==0.12.2
-plotly==5.15.0
 pytz==2025.2
