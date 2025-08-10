@@ -21,6 +21,4 @@ prophet==1.1.4
 statsmodels==0.14.0
 seaborn==0.12.2
 plotly==5.15.0
-asyncio
-pytz
-base64
+pytz==2025.2
