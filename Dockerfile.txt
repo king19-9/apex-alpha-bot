@@ -2,14 +2,14 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies including TA-Lib
+# نصب پیش‌نیازهای سیستم برای TA-Lib
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install TA-Lib from source
+# نصب TA-Lib از سورس
 RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     tar -xvf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib/ && \
@@ -19,16 +19,16 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     cd .. && \
     rm -rf ta-lib/ ta-lib-0.4.0-src.tar.gz
 
-# Copy and install Python requirements
+# کپی و نصب نیازمندی‌های پایتون
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
+# کپی کدهای برنامه
 COPY . .
 
-# Create a non-root user
+# ایجاد کاربر غیر ریشه
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Command to run the application
+# دستور اجرای برنامه
 CMD ["python", "main.py"]
