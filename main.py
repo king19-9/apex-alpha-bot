@@ -16,6 +16,7 @@ import io
 import base64
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 from asyncio_throttle import Throttler
@@ -246,7 +247,7 @@ class AdvancedTradingBot:
             'cup_and_handle': ['الگوی فنجان و دسته', 'سیگنال خرید'],
             'rising_wedge': ['گوه صعودی', 'سیگنال فروش'],
             'falling_wedge': ['گوه نزولی', 'سیگنال خرید']
-        }
+        ]
     
     def create_tables(self):
         """ایجاد جداول پایگاه داده"""
@@ -2423,25 +2424,46 @@ async def main():
     """نقطه ورودی اصلی برنامه"""
     logger.info("Starting Advanced Trading Bot...")
     
-    # ایجاد نمونه از ربات
-    bot = AdvancedTradingBot()
-    
-    # دریافت توکن تلگرام
-    token = os.getenv("TELEGRAM_TOKEN")
-    if not token:
-        logger.error("TELEGRAM_TOKEN not set in environment variables")
-        return
-    
-    # ایجاد اپلیکیشن تلگرام
-    application = Application.builder().token(token).build()
-    
-    # تنظیم هندلرها
-    from telegram_handlers import setup_handlers
-    setup_handlers(application, bot)
-    
-    # اجرای ربات
-    logger.info("Bot started successfully")
-    await application.run_polling()
+    try:
+        # ایجاد نمونه از ربات
+        bot = AdvancedTradingBot()
+        
+        # دریافت توکن تلگرام
+        token = os.getenv("TELEGRAM_TOKEN")
+        if not token:
+            logger.error("TELEGRAM_TOKEN not set in environment variables")
+            return
+        
+        # ایجاد درخواست با پروکسی اگر تنظیم شده باشد
+        if PROXY_SETTINGS:
+            request = HTTPXRequest(
+                proxy=PROXY_SETTINGS['proxy']['url'],
+                connect_timeout=30.0,
+                read_timeout=30.0,
+                pool_timeout=30.0,
+            )
+        else:
+            request = HTTPXRequest()
+        
+        # ایجاد اپلیکیشن تلگرام
+        application = Application.builder().token(token).request(request).build()
+        
+        # تنظیم هندلرها
+        from telegram_handlers import setup_handlers
+        setup_handlers(application, bot)
+        
+        # اجرای ربات
+        logger.info("Bot started successfully")
+        await application.run_polling()
+        
+    except Exception as e:
+        logger.error(f"Error in main function: {e}")
+        raise
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
