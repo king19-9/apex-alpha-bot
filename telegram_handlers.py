@@ -6,6 +6,8 @@ logger = logging.getLogger(__name__)
 
 def setup_handlers(application, bot):
     """تنظیم هندلرهای تلگرام"""
+    # ذخیره نمونه bot در داده‌های اپلیکیشن
+    application.bot_data['trading_bot'] = bot
     
     # هندلر دستور /start
     application.add_handler(CommandHandler("start", start_command))
@@ -31,6 +33,9 @@ def setup_handlers(application, bot):
     # هندلر دستور /settings
     application.add_handler(CommandHandler("settings", settings_command))
     
+    # هندلر دستور /advanced (برای تحلیل‌های پیشرفته)
+    application.add_handler(CommandHandler("advanced", advanced_command))
+    
     # هندلر پیام‌های متنی
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
@@ -46,7 +51,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• تحلیل کامل ارزهای دیجیتال\n"
         "• دریافت سیگنال‌های معاملاتی\n"
         "• تحلیل اخبار و احساسات بازار\n"
-        "• مدیریت واچ‌لیست شخصی\n\n"
+        "• مدیریت واچ‌لیست شخصی\n"
+        "• تحلیل‌های پیشرفته (ویچاف، پروفایل حجمی، هارمونیک و ...)\n\n"
         "برای شروع، از دستور /help استفاده کنید یا نام ارز را ارسال کنید."
     )
 
@@ -64,6 +70,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     /signals - دریافت سیگنال‌های معاملاتی
     /watchlist - مدیریت واچ‌لیست شخصی
     /settings - تنظیمات کاربر
+    /advanced [symbol] - تحلیل‌های پیشرفته (مثال: /advanced BTC)
     
     همچنین می‌توانید مستقیماً نام ارز را ارسال کنید تا تحلیل کامل آن را دریافت کنید.
     """
@@ -72,7 +79,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /analyze"""
-    bot = context.bot
+    bot = context.bot_data.get('trading_bot')
+    if not bot:
+        await update.message.reply_text("ربات در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+        return
+    
     # استخراج نماد از پیام
     if context.args:
         symbol = context.args[0].upper()
@@ -97,9 +108,44 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await processing_message.edit_text("متأسفانه در تحلیل خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
 
+async def advanced_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """هندلر دستور /advanced برای تحلیل‌های پیشرفته"""
+    bot = context.bot_data.get('trading_bot')
+    if not bot:
+        await update.message.reply_text("ربات در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+        return
+    
+    # استخراج نماد از پیام
+    if context.args:
+        symbol = context.args[0].upper()
+    else:
+        await update.message.reply_text("لطفاً نماد ارز را وارد کنید. مثال: /advanced BTC")
+        return
+    
+    # ارسال پیام در حال پردازش
+    processing_message = await update.message.reply_text(f"در حال تحلیل پیشرفته {symbol}... لطفاً صبر کنید.")
+    
+    try:
+        # انجام تحلیل
+        analysis = await bot.perform_advanced_analysis(symbol)
+        
+        # ایجاد پاسخ برای تحلیل پیشرفته
+        response = format_advanced_analysis_response(analysis)
+        
+        # ویرایش پیام با نتیجه تحلیل
+        await processing_message.edit_text(response, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in advanced_command: {e}")
+        await processing_message.edit_text("متأسفانه در تحلیل پیشرفته خطایی رخ داد. لطفاً دوباره تلاش کنید.")
+
+
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /price"""
-    bot = context.bot
+    bot = context.bot_data.get('trading_bot')
+    if not bot:
+        await update.message.reply_text("ربات در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+        return
+    
     # استخراج نماد از پیام
     if context.args:
         symbol = context.args[0].upper()
@@ -131,7 +177,11 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /news"""
-    bot = context.bot
+    bot = context.bot_data.get('trading_bot')
+    if not bot:
+        await update.message.reply_text("ربات در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+        return
+    
     # استخراج نماد از پیام
     if context.args:
         symbol = context.args[0].upper()
@@ -168,6 +218,11 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر دستور /signals"""
+    bot = context.bot_data.get('trading_bot')
+    if not bot:
+        await update.message.reply_text("ربات در حال حاضر در دسترس نیست. لطفاً بعداً تلاش کنید.")
+        return
+    
     # ارسال پیام در حال پردازش
     processing_message = await update.message.reply_text("در حال دریافت سیگنال‌های معاملاتی...")
     
@@ -247,7 +302,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """هندلر پیام‌های متنی"""
-    bot = context.bot
+    bot = context.bot_data.get('trading_bot')
     text = update.message.text
     
     # اگر متن یک نماد ارز است
@@ -279,7 +334,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     query.answer()
     
     data = query.data
-    bot = context.bot
+    bot = context.bot_data.get('trading_bot')
     
     if data.startswith("analyze_"):
         symbol = data.split("_")[1]
@@ -387,6 +442,11 @@ def format_analysis_response(analysis):
         rsi_signal = "اشباع خرید" if rsi > 70 else "اشباع فروش" if rsi < 30 else "خنثی"
         response += f"• RSI(14): {rsi:.1f} ({rsi_signal})\n"
     
+    if 'macd' in classical:
+        macd = classical['macd']
+        macd_signal = "صعودی" if macd.get('macd', 0) > macd.get('signal', 0) else "نزولی"
+        response += f"• MACD: {macd_signal}\n"
+    
     if 'trend' in classical:
         trend = classical['trend']
         response += f"• روند: {trend.get('direction', 'نامشخص')}\n"
@@ -400,6 +460,101 @@ def format_analysis_response(analysis):
     response += f"💭 *تحلیل احساسات*\n"
     response += f"• احساسات بازار: {sentiment_signal} ({avg_sentiment:.2f})\n"
     response += f"• تعداد اخبار: {sentiment.get('news_count', 0)}\n\n"
+    
+    # پیشنهاد نهایی
+    if signal == "BUY":
+        response += "🟢 *پیشنهاد*: خرید با ریسک متوسط\n"
+    elif signal == "SELL":
+        response += "🔴 *پیشنهاد*: فروش با احتیاط\n"
+    else:
+        response += "🟡 *پیشنهاد*: منتظر سیگنال بعدی بمانید\n"
+    
+    response += f"\n⏱ زمان تحلیل: {analysis.get('timestamp', 'نامشخص')}"
+    
+    return response
+
+
+def format_advanced_analysis_response(analysis):
+    """فرمت‌بندی پاسخ تحلیل پیشرفته"""
+    symbol = analysis.get('symbol', 'UNKNOWN')
+    signal = analysis.get('signal', 'UNKNOWN')
+    confidence = analysis.get('confidence', 0)
+    
+    # ایجاد پاسخ
+    response = f"🚀 *تحلیل پیشرفته {symbol}*\n\n"
+    
+    # سیگنال و اطمینان
+    signal_emoji = "🟢" if signal == "BUY" else "🔴" if signal == "SELL" else "🟡"
+    response += f"{signal_emoji} *سیگنال*: {signal}\n"
+    response += f"📈 *اطمینان*: {confidence:.1%}\n\n"
+    
+    # داده‌های بازار
+    market_data = analysis.get('market_data', {})
+    response += f"💰 *داده‌های بازار*\n"
+    response += f"• قیمت: ${market_data.get('price', 0):,.2f}\n"
+    response += f"• تغییر 24h: {market_data.get('price_change_24h', 0):+.2f}%\n"
+    response += f"• حجم 24h: ${market_data.get('volume_24h', 0):,.0f}\n"
+    response += f"• ارزش بازار: ${market_data.get('market_cap', 0):,.0f}\n\n"
+    
+    # تحلیل‌های پیشرفته
+    advanced = analysis.get('advanced_analysis', {})
+    
+    # تحلیل ویچاف
+    wyckoff = advanced.get('wyckoff', {})
+    if wyckoff:
+        response += f"🔍 *تحلیل ویچاف*\n"
+        response += f"• فاز: {wyckoff.get('phase', 'نامشخص')}\n"
+        response += f"• انباشت: {'بله' if wyckoff.get('accumulation_phase', False) else 'خیر'}\n"
+        response += f"• توزیع: {'بله' if wyckoff.get('distribution_phase', False) else 'خیر'}\n\n"
+    
+    # تحلیل پروفایل حجمی
+    volume_profile = advanced.get('volume_profile', {})
+    if volume_profile:
+        response += f"📊 *پروفایل حجمی*\n"
+        poc = volume_profile.get('poc', {})
+        response += f"• POC: ${poc.get('price_level', 0):.2f}\n"
+        response += f"• محدوده ارزش: ${volume_profile.get('value_area_low', 0):.2f} - ${volume_profile.get('value_area_high', 0):.2f}\n\n"
+    
+    # تحلیل هارمونیک
+    harmonic = advanced.get('harmonic_patterns', {})
+    if harmonic:
+        response += f"🎵 *الگوهای هارمونیک*\n"
+        response += f"• تعداد الگوها: {harmonic.get('pattern_count', 0)}\n"
+        patterns = harmonic.get('patterns_found', [])
+        for pattern in patterns[:2]:  # نمایش 2 الگو
+            response += f"• {pattern.get('pattern', '')}: {pattern.get('type', '')}\n"
+        response += "\n"
+    
+    # تحلیل ابر ایچیموکو
+    ichimoku = advanced.get('ichimoku', {})
+    if ichimoku:
+        response += f"☁️ *ابر ایچیموکو*\n"
+        response += f"• Tenkan-sen: ${ichimoku.get('tenkan_sen', 0):.2f}\n"
+        response += f"• Kijun-sen: ${ichimoku.get('kijun_sen', 0):.2f}\n"
+        response += f"• قیمت بالای ابر: {'بله' if ichimoku.get('price_above_kumo', False) else 'خیر'}\n\n"
+    
+    # تحلیل ساختار بازار
+    market_structure = advanced.get('market_structure', {})
+    if market_structure:
+        response += f"🏗️ *ساختار بازار*\n"
+        response += f"• روند: {market_structure.get('market_trend', 'نامشخص')}\n"
+        order_blocks = market_structure.get('order_blocks', [])
+        response += f"• Order Block‌ها: {len(order_blocks)}\n\n"
+    
+    # تحلیل جریان سفارش
+    order_flow = advanced.get('order_flow', {})
+    if order_flow:
+        response += f"🔄 *جریان سفارش*\n"
+        response += f"• نسبت خرید/فروش: {order_flow.get('buy_sell_ratio', 1):.2f}\n"
+        response += f"• حجم خرید: ${order_flow.get('buy_volume', 0):,.0f}\n"
+        response += f"• حجم فروش: ${order_flow.get('sell_volume', 0):,.0f}\n\n"
+    
+    # تحلیل هوش مصنوعی
+    ai_analysis = analysis.get('ai_analysis', {})
+    if ai_analysis:
+        response += f"🤖 *تحلیل هوش مصنوعی*\n"
+        response += f"• پیش‌بینی نهایی: ${ai_analysis.get('final_prediction', 0):.2f}\n"
+        response += f"• تعداد مدل‌ها: {len(ai_analysis.get('predictions', {}))}\n\n"
     
     # پیشنهاد نهایی
     if signal == "BUY":
