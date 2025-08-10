@@ -329,6 +329,63 @@ class AdvancedTradingBot:
         )
         ''')
         
+        # جدول داده‌های اقتصادی (NFP, CPI, FOMC)
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS economic_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT,
+            event_name TEXT,
+            event_date TIMESTAMP,
+            impact_level TEXT,
+            actual_value REAL,
+            forecast_value REAL,
+            previous_value REAL,
+            currency_affected TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # جدول اردربلاک‌ها
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS order_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timeframe TEXT,
+            block_type TEXT,  -- 'buy' or 'sell'
+            price REAL,
+            volume REAL,
+            timestamp TIMESTAMP,
+            is_valid BOOLEAN,
+            confidence REAL
+        )
+        ''')
+        
+        # جدول نواحی عرضه و تقاضا
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS supply_demand_zones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT,
+            timeframe TEXT,
+            zone_type TEXT,  -- 'supply' or 'demand'
+            price_high REAL,
+            price_low REAL,
+            timestamp TIMESTAMP,
+            strength REAL
+        )
+        ''')
+        
+        # جدول سشن‌های معاملاتی
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trading_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_name TEXT,  -- 'Asian', 'European', 'American'
+            start_time TIME,
+            end_time TIME,
+            timezone TEXT,
+            volatility_level REAL
+        )
+        ''')
+        
         self.conn.commit()
         logger.info("Database tables created successfully")
     
@@ -658,9 +715,7 @@ class AdvancedTradingBot:
             return symbol_map[symbol]
         
         # در غیر این صورت، فرمت پیش‌فرض را برگردان
-        return f"{symbol}/USDT"
-    
-    async def fetch_news_from_multiple_sources(self, symbol=None):
+        return f"{symbol}/USDT"    async def fetch_news_from_multiple_sources(self, symbol=None):
         """دریافت اخبار از چندین منبع"""
         news = []
         
@@ -681,6 +736,12 @@ class AdvancedTradingBot:
             news.extend(await self.fetch_coingecko_news(symbol))
         except Exception as e:
             logger.error(f"Error fetching from CoinGecko: {e}")
+        
+        # دریافت اخبار اقتصادی (NFP, CPI, FOMC)
+        try:
+            news.extend(await self.fetch_economic_news())
+        except Exception as e:
+            logger.error(f"Error fetching economic news: {e}")
         
         return news
     
@@ -772,6 +833,46 @@ class AdvancedTradingBot:
                     ]
         return []
     
+    async def fetch_economic_news(self):
+        """دریافت اخبار اقتصادی (NFP, CPI, FOMC)"""
+        # در یک پیاده‌سازی واقعی، این باید از APIهای اقتصادی استفاده کند
+        # اینجا یک پیاده‌سازی ساده شده ارائه می‌شود
+        
+        economic_events = [
+            {
+                'title': 'FOMC Meeting Minutes',
+                'content': 'Federal Open Market Committee meeting minutes released',
+                'source': 'Federal Reserve',
+                'url': 'https://www.federalreserve.gov',
+                'published_at': datetime.now(),
+                'symbols': ['USD', 'BTC', 'ETH'],
+                'event_type': 'FOMC',
+                'impact': 'high'
+            },
+            {
+                'title': 'Non-Farm Payrolls Report',
+                'content': 'Latest non-farm payrolls data shows unexpected results',
+                'source': 'Bureau of Labor Statistics',
+                'url': 'https://www.bls.gov',
+                'published_at': datetime.now(),
+                'symbols': ['USD', 'BTC', 'ETH'],
+                'event_type': 'NFP',
+                'impact': 'high'
+            },
+            {
+                'title': 'CPI Inflation Data',
+                'content': 'Consumer Price Index inflation data released',
+                'source': 'Bureau of Labor Statistics',
+                'url': 'https://www.bls.gov',
+                'published_at': datetime.now(),
+                'symbols': ['USD', 'BTC', 'ETH'],
+                'event_type': 'CPI',
+                'impact': 'high'
+            }
+        ]
+        
+        return economic_events
+    
     async def advanced_sentiment_analysis(self, news_items):
         """تحلیل احساسات پیشرفته با هوش مصنوعی داخلی"""
         if not news_items:
@@ -781,12 +882,14 @@ class AdvancedTradingBot:
                 'negative_count': 0,
                 'neutral_count': 0,
                 'topics': [],
-                'trends': []
+                'trends': [],
+                'economic_impact': []
             }
         
         sentiments = []
         topics = []
         all_text = ""
+        economic_impacts = []
         
         for news in news_items:
             text = f"{news['title']} {news['content']}"
@@ -799,6 +902,11 @@ class AdvancedTradingBot:
             # استخراج موضوعات
             news_topics = self.extract_topics(text)
             topics.extend(news_topics)
+            
+            # تحلیل تاثیر اقتصادی
+            if 'event_type' in news:
+                impact = self.analyze_economic_impact(news)
+                economic_impacts.append(impact)
         
         # تحلیل روندها
         trends = self.analyze_trends(all_text)
@@ -811,9 +919,10 @@ class AdvancedTradingBot:
                 'negative_count': len([s for s in sentiments if s < -0.2]),
                 'neutral_count': len([s for s in sentiments if -0.2 <= s <= 0.2]),
                 'topics': self.get_top_topics(topics),
-                'trends': trends
+                'trends': trends,
+                'economic_impact': economic_impacts
             }
-        return {'average_sentiment': 0, 'positive_count': 0, 'negative_count': 0, 'neutral_count': 0, 'topics': [], 'trends': []}
+        return {'average_sentiment': 0, 'positive_count': 0, 'negative_count': 0, 'neutral_count': 0, 'topics': [], 'trends': [], 'economic_impact': []}
     
     def analyze_text_sentiment(self, text):
         """تحلیل احساسات متن با روش‌های پیشرفته"""
@@ -914,6 +1023,41 @@ class AdvancedTradingBot:
         
         return trends
     
+    def analyze_economic_impact(self, news_item):
+        """تحلیل تاثیر رویدادهای اقتصادی"""
+        event_type = news_item.get('event_type', '')
+        impact = news_item.get('impact', 'medium')
+        
+        # تعیین تاثیر بر بازار ارزهای دیجیتال
+        if event_type == 'FOMC':
+            return {
+                'event': 'FOMC',
+                'impact': impact,
+                'effect': 'High volatility expected, especially for USD pairs',
+                'affected_pairs': ['BTC/USD', 'ETH/USD', 'XRP/USD']
+            }
+        elif event_type == 'NFP':
+            return {
+                'event': 'NFP',
+                'impact': impact,
+                'effect': 'Strong impact on USD and correlated assets',
+                'affected_pairs': ['BTC/USD', 'ETH/USD', 'SOL/USD']
+            }
+        elif event_type == 'CPI':
+            return {
+                'event': 'CPI',
+                'impact': impact,
+                'effect': 'Inflation data affects all risk assets',
+                'affected_pairs': ['BTC/USD', 'ETH/USD', 'ADA/USD']
+            }
+        
+        return {
+            'event': event_type,
+            'impact': impact,
+            'effect': 'Unknown economic event',
+            'affected_pairs': []
+        }
+    
     def get_top_topics(self, topics):
         """دریافت پرتکرارترین موضوعات"""
         topic_counts = Counter(topics)
@@ -940,6 +1084,14 @@ class AdvancedTradingBot:
                     market_caps.append(data['market_cap'])
                 if 'percent_change_24h' in data and data['percent_change_24h']:
                     changes.append(data['percent_change_24h'])
+                if 'usd' in data and data['usd']:
+                    prices.append(data['usd'])
+                if 'usd_market_cap' in data and data['usd_market_cap']:
+                    market_caps.append(data['usd_market_cap'])
+                if 'usd_24h_vol' in data and data['usd_24h_vol']:
+                    volumes.append(data['usd_24h_vol'])
+                if 'usd_24h_change' in data and data['usd_24h_change']:
+                    changes.append(data['usd_24h_change'])
         
         # محاسبه میانگین‌ها
         avg_price = np.mean(prices) if prices else 0
@@ -1007,7 +1159,7 @@ class AdvancedTradingBot:
                 sentiment = await self.advanced_sentiment_analysis(news)
             except Exception as e:
                 logger.error(f"Error in sentiment analysis: {e}")
-                sentiment = {'average_sentiment': 0, 'topics': []}
+                sentiment = {'average_sentiment': 0, 'topics': [], 'economic_impact': []}
             
             # دریافت داده‌های تاریخی
             try:
@@ -1037,6 +1189,27 @@ class AdvancedTradingBot:
                 logger.error(f"Error in supply demand analysis: {e}")
                 supply_demand = {'imbalance': 0}
             
+            # تحلیل اردربلاک‌ها
+            try:
+                order_blocks = self.analyze_order_blocks(historical_data)
+            except Exception as e:
+                logger.error(f"Error in order block analysis: {e}")
+                order_blocks = []
+            
+            # تحلیل نواحی تصمیم‌گیری
+            try:
+                decision_zones = self.analyze_decision_zones(historical_data)
+            except Exception as e:
+                logger.error(f"Error in decision zone analysis: {e}")
+                decision_zones = []
+            
+            # تحلیل سشن‌های معاملاتی
+            try:
+                session_analysis = self.analyze_trading_sessions(historical_data)
+            except Exception as e:
+                logger.error(f"Error in session analysis: {e}")
+                session_analysis = {}
+            
             # تحلیل هوش مصنوعی
             try:
                 ai_analysis = self.perform_ai_analysis(historical_data, market_data, sentiment)
@@ -1052,6 +1225,9 @@ class AdvancedTradingBot:
                 'technical': technical_analysis,
                 'elliott': elliott_analysis,
                 'supply_demand': supply_demand,
+                'order_blocks': order_blocks,
+                'decision_zones': decision_zones,
+                'session_analysis': session_analysis,
                 'ai_analysis': ai_analysis,
                 'news_count': len(news),
                 'timestamp': datetime.now().isoformat()
@@ -1124,7 +1300,6 @@ class AdvancedTradingBot:
         }, index=dates)
         
         return data
-    
     def advanced_technical_analysis(self, data):
         """تحلیل تکنیکال پیشرفته"""
         if data.empty:
@@ -1135,7 +1310,8 @@ class AdvancedTradingBot:
             result = {
                 'classical': {},
                 'oscillators': {},
-                'patterns': {}
+                'patterns': {},
+                'multi_timeframe': {}
             }
             
             # RSI
@@ -1204,10 +1380,93 @@ class AdvancedTradingBot:
                 if valid_patterns:
                     result['patterns'] = valid_patterns
             
+            # تحلیل چند تایم فریم
+            result['multi_timeframe'] = self.analyze_multiple_timeframes(data)
+            
             return result
         except Exception as e:
             logger.error(f"Error in technical analysis: {e}")
             return {}
+    
+    def analyze_multiple_timeframes(self, data):
+        """تحلیل چند تایم فریم"""
+        try:
+            multi_timeframe = {}
+            
+            # تحلیل تایم فریم‌های مختلف
+            timeframes = {
+                '1h': self.resample_data(data, '1H'),
+                '4h': self.resample_data(data, '4H'),
+                '1d': self.resample_data(data, '1D'),
+                '1w': self.resample_data(data, '1W')
+            }
+            
+            for tf, tf_data in timeframes.items():
+                if not tf_data.empty:
+                    # محاسبه RSI برای هر تایم فریم
+                    delta = tf_data['Close'].diff()
+                    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                    rs = gain / loss
+                    rsi = 100 - (100 / (1 + rs))
+                    
+                    # محاسبه روند
+                    sma_20 = tf_data['Close'].rolling(window=20).mean().iloc[-1]
+                    sma_50 = tf_data['Close'].rolling(window=50).mean().iloc[-1] if len(tf_data) >= 50 else tf_data['Close'].iloc[-1]
+                    
+                    trend = 'صعودی' if sma_20 > sma_50 else 'نزولی' if sma_20 < sma_50 else 'خنثی'
+                    
+                    multi_timeframe[tf] = {
+                        'rsi': rsi.iloc[-1],
+                        'trend': trend,
+                        'price': tf_data['Close'].iloc[-1],
+                        'volume': tf_data['Volume'].iloc[-1]
+                    }
+            
+            return multi_timeframe
+        except Exception as e:
+            logger.error(f"Error in multi-timeframe analysis: {e}")
+            return {}
+    
+    def resample_data(self, data, timeframe):
+        """تغییر تایم فریم داده‌ها"""
+        try:
+            if timeframe == '1H':
+                return data.resample('1H').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                }).dropna()
+            elif timeframe == '4H':
+                return data.resample('4H').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                }).dropna()
+            elif timeframe == '1D':
+                return data.resample('1D').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                }).dropna()
+            elif timeframe == '1W':
+                return data.resample('1W').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                }).dropna()
+            return data
+        except Exception as e:
+            logger.error(f"Error resampling data to {timeframe}: {e}")
+            return pd.DataFrame()
     
     def advanced_elliott_wave(self, data):
         """تحلیل امواج الیوت"""
@@ -1291,6 +1550,186 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in supply demand analysis: {e}")
             return {'imbalance': 'unknown', 'score': 0.5, 'error': str(e)}
+    
+    def analyze_order_blocks(self, data):
+        """تحلیل اردربلاک‌ها"""
+        try:
+            order_blocks = []
+            
+            if len(data) < 20:
+                return order_blocks
+            
+            # شناسایی اردربلاک‌های خرید (Buy Side Liquidity)
+            # اردربلاک خرید معمولاً پس از یک حرکت نزولی قوی شکل می‌گیرد
+            for i in range(2, len(data)-2):
+                # بررسی الگوی اردربلاک خرید
+                if (data['Close'].iloc[i-2] > data['Close'].iloc[i-1] and 
+                    data['Close'].iloc[i-1] < data['Close'].iloc[i] and
+                    data['Volume'].iloc[i] > data['Volume'].iloc[i-1] * 1.5):
+                    
+                    order_blocks.append({
+                        'type': 'buy',
+                        'price': data['Close'].iloc[i],
+                        'volume': data['Volume'].iloc[i],
+                        'timestamp': data.index[i],
+                        'strength': self.calculate_order_block_strength(data, i, 'buy')
+                    })
+            
+            # شناسایی اردربلاک‌های فروش (Sell Side Liquidity)
+            # اردربلاک فروش معمولاً پس از یک حرکت صعودی قوی شکل می‌گیرد
+            for i in range(2, len(data)-2):
+                # بررسی الگوی اردربلاک فروش
+                if (data['Close'].iloc[i-2] < data['Close'].iloc[i-1] and 
+                    data['Close'].iloc[i-1] > data['Close'].iloc[i] and
+                    data['Volume'].iloc[i] > data['Volume'].iloc[i-1] * 1.5):
+                    
+                    order_blocks.append({
+                        'type': 'sell',
+                        'price': data['Close'].iloc[i],
+                        'volume': data['Volume'].iloc[i],
+                        'timestamp': data.index[i],
+                        'strength': self.calculate_order_block_strength(data, i, 'sell')
+                    })
+            
+            return order_blocks[-5:] if order_blocks else []  # برگرداندن 5 اردربلاک آخر
+        except Exception as e:
+            logger.error(f"Error in order block analysis: {e}")
+            return []
+    
+    def calculate_order_block_strength(self, data, index, block_type):
+        """محاسبه قدرت اردربلاک"""
+        try:
+            # محاسبه قدرت بر اساس حجم و تغییر قیمت
+            volume_strength = data['Volume'].iloc[index] / data['Volume'].rolling(window=20).mean().iloc[index]
+            
+            if block_type == 'buy':
+                price_change = (data['Close'].iloc[index+1] - data['Close'].iloc[index]) / data['Close'].iloc[index]
+            else:
+                price_change = (data['Close'].iloc[index] - data['Close'].iloc[index+1]) / data['Close'].iloc[index+1]
+            
+            # ترکیب حجم و تغییر قیمت برای محاسبه قدرت
+            strength = min(1.0, volume_strength * (1 + abs(price_change)))
+            
+            return strength
+        except Exception as e:
+            logger.error(f"Error calculating order block strength: {e}")
+            return 0.5
+    
+    def analyze_decision_zones(self, data):
+        """تحلیل نواحی تصمیم‌گیری"""
+        try:
+            decision_zones = []
+            
+            if len(data) < 50:
+                return decision_zones
+            
+            # شناسایی نواحی حمایت و مقاومت
+            # استفاده از روش کف و سقف محلی
+            for i in range(20, len(data)-20):
+                window = data.iloc[i-20:i+20]
+                
+                # شناسایی ناحیه حمایت
+                if data['Low'].iloc[i] == window['Low'].min():
+                    decision_zones.append({
+                        'type': 'support',
+                        'price': data['Low'].iloc[i],
+                        'strength': self.calculate_zone_strength(data, i, 'support'),
+                        'timestamp': data.index[i]
+                    })
+                
+                # شناسایی ناحیه مقاومت
+                if data['High'].iloc[i] == window['High'].max():
+                    decision_zones.append({
+                        'type': 'resistance',
+                        'price': data['High'].iloc[i],
+                        'strength': self.calculate_zone_strength(data, i, 'resistance'),
+                        'timestamp': data.index[i]
+                    })
+            
+            return decision_zones[-5:] if decision_zones else []  # برگرداندن 5 ناحیه آخر
+        except Exception as e:
+            logger.error(f"Error in decision zone analysis: {e}")
+            return []
+    
+    def calculate_zone_strength(self, data, index, zone_type):
+        """محاسبه قدرت ناحیه تصمیم‌گیری"""
+        try:
+            # محاسبه تعداد دفعات تست ناحیه
+            test_count = 0
+            successful_tests = 0
+            
+            if zone_type == 'support':
+                # برای ناحیه حمایت، بررسی واکنش قیمت به ناحیه
+                for i in range(max(0, index-10), min(len(data), index+10)):
+                    if data['Low'].iloc[i] <= data['Low'].iloc[index] * 1.01:
+                        test_count += 1
+                        if data['Close'].iloc[i] > data['Close'].iloc[index]:
+                            successful_tests += 1
+            else:
+                # برای ناحیه مقاومت، بررسی واکنش قیمت به ناحیه
+                for i in range(max(0, index-10), min(len(data), index+10)):
+                    if data['High'].iloc[i] >= data['High'].iloc[index] * 0.99:
+                        test_count += 1
+                        if data['Close'].iloc[i] < data['Close'].iloc[index]:
+                            successful_tests += 1
+            
+            # محاسبه قدرت بر اساس موفقیت تست‌ها
+            strength = successful_tests / test_count if test_count > 0 else 0.5
+            
+            return strength
+        except Exception as e:
+            logger.error(f"Error calculating zone strength: {e}")
+            return 0.5
+    
+    def analyze_trading_sessions(self, data):
+        """تحلیل سشن‌های معاملاتی"""
+        try:
+            session_analysis = {
+                'asian_session': {
+                    'start': '22:00',
+                    'end': '08:00',
+                    'volatility': 0.0,
+                    'volume_ratio': 0.0
+                },
+                'european_session': {
+                    'start': '08:00',
+                    'end': '16:00',
+                    'volatility': 0.0,
+                    'volume_ratio': 0.0
+                },
+                'american_session': {
+                    'start': '13:00',
+                    'end': '22:00',
+                    'volatility': 0.0,
+                    'volume_ratio': 0.0
+                }
+            }
+            
+            # تبدیل زمان به UTC
+            data_utc = data.copy()
+            data_utc.index = data_utc.index.tz_localize(None).tz_convert('UTC')
+            
+            # محاسبه نوسان و حجم برای هر سشن
+            for session_name, session_info in session_analysis.items():
+                session_data = data_utc.between_time(session_info['start'], session_info['end'])
+                
+                if not session_data.empty:
+                    # محاسبه نوسان
+                    returns = session_data['Close'].pct_change().dropna()
+                    volatility = returns.std() * np.sqrt(252) if len(returns) > 0 else 0
+                    
+                    # محاسبه نسبت حجم
+                    total_volume = data['Volume'].sum()
+                    session_volume = session_data['Volume'].sum()
+                    volume_ratio = session_volume / total_volume if total_volume > 0 else 0
+                    
+                    session_analysis[session_name]['volatility'] = volatility
+                    session_analysis[session_name]['volume_ratio'] = volume_ratio
+            
+            return session_analysis
+        except Exception as e:
+            logger.error(f"Error in session analysis: {e}")
+            return {}
     
     def perform_ai_analysis(self, historical_data, market_data, sentiment):
         """انجام تحلیل هوش مصنوعی پیشرفته"""
@@ -1521,6 +1960,14 @@ class AdvancedTradingBot:
             news_opportunities = self.analyze_news_opportunities(sentiment)
             opportunities['news_based'] = news_opportunities
             
+            # تحلیل فرصت‌های مبتنی بر اردربلاک‌ها
+            order_block_opportunities = self.analyze_order_block_opportunities(historical_data)
+            opportunities['order_block'] = order_block_opportunities
+            
+            # تحلیل فرصت‌های مبتنی بر نواحی عرضه و تقاضا
+            supply_demand_opportunities = self.analyze_supply_demand_opportunities(historical_data)
+            opportunities['supply_demand'] = supply_demand_opportunities
+            
             # محاسبه امتیاز کلی فرصت‌ها
             opportunity_score = self.calculate_opportunity_score(opportunities)
             opportunities['overall_score'] = opportunity_score
@@ -1530,365 +1977,4 @@ class AdvancedTradingBot:
             logger.error(f"Error in opportunity analysis: {e}")
             return {'error': str(e)}
     
-    def analyze_short_term_opportunities(self, historical_data):
-        """تحلیل فرصت‌های کوتاه مدت"""
-        try:
-            if len(historical_data) < 20:
-                return {'error': 'Not enough data for short-term analysis'}
-            
-            # محاسبه تغییرات کوتاه مدت
-            data = historical_data.copy()
-            data['change'] = data['Close'].pct_change()
-            data['volatility'] = data['change'].rolling(window=5).std()
-            
-            # شناسایی الگوهای کوتاه مدت
-            current_price = data['Close'].iloc[-1]
-            recent_volatility = data['volatility'].iloc[-1]
-            recent_change = data['change'].iloc[-1]
-            
-            # تحلیل فرصت‌ها
-            if recent_volatility > 0.02:  # نوسان بالا
-                if recent_change < -0.03:  # افت شدید
-                    return {
-                        'opportunity': 'buy_dip',
-                        'confidence': min(0.9, 0.5 + abs(recent_change) * 10),
-                        'description': 'فرصت خرید در افت شدید'
-                    }
-                elif recent_change > 0.03:  # رشد شدید
-                    return {
-                        'opportunity': 'take_profit',
-                        'confidence': min(0.9, 0.5 + recent_change * 10),
-                        'description': 'فرصت سودبرداری در رشد شدید'
-                    }
-            
-            # تحلیل شکست سطوح
-            if len(data) >= 10:
-                resistance = data['High'].rolling(window=10).max().iloc[-2]
-                support = data['Low'].rolling(window=10).min().iloc[-2]
-                
-                if current_price > resistance:  # شکست مقاومت
-                    return {
-                        'opportunity': 'breakout',
-                        'confidence': 0.7,
-                        'description': 'شکست مقاومت'
-                    }
-                elif current_price < support:  # شکست حمایت
-                    return {
-                        'opportunity': 'breakdown',
-                        'confidence': 0.7,
-                        'description': 'شکست حمایت'
-                    }
-            
-            return {'opportunity': 'none', 'confidence': 0.3, 'description': 'فرصت کوتاه مدت مشخصی یافت نشد'}
-        except Exception as e:
-            logger.error(f"Error in short-term opportunity analysis: {e}")
-            return {'error': str(e)}
-    
-    def analyze_long_term_opportunities(self, historical_data, market_data):
-        """تحلیل فرصت‌های بلند مدت"""
-        try:
-            if len(historical_data) < 100:
-                return {'error': 'Not enough data for long-term analysis'}
-            
-            # محاسبه میانگین‌های متحرک بلند مدت
-            data = historical_data.copy()
-            data['sma_50'] = data['Close'].rolling(window=50).mean()
-            data['sma_200'] = data['Close'].rolling(window=200).mean()
-            
-            # تحلیل روند بلند مدت
-            current_price = data['Close'].iloc[-1]
-            sma_50 = data['sma_50'].iloc[-1]
-            sma_200 = data['sma_200'].iloc[-1]
-            
-            # تحلیل فرصت‌ها
-            if sma_50 > sma_200 and current_price > sma_50:  # روند صعودی
-                return {
-                    'opportunity': 'bull_trend',
-                    'confidence': 0.8,
-                    'description': 'روند صعودی بلند مدت'
-                }
-            elif sma_50 < sma_200 and current_price < sma_50:  # روند نزولی
-                return {
-                    'opportunity': 'bear_trend',
-                    'confidence': 0.8,
-                    'description': 'روند نزولی بلند مدت'
-                }
-            elif sma_50 > sma_200 and current_price < sma_50:  # اصلاح در روند صعودی
-                return {
-                    'opportunity': 'buy_dip',
-                    'confidence': 0.6,
-                    'description': 'اصلاح در روند صعودی'
-                }
-            elif sma_50 < sma_200 and current_price > sma_50:  # اصلاح در روند نزولی
-                return {
-                    'opportunity': 'sell_rally',
-                    'confidence': 0.6,
-                    'description': 'اصلاح در روند نزولی'
-                }
-            
-            return {'opportunity': 'none', 'confidence': 0.3, 'description': 'فرصت بلند مدت مشخصی یافت نشد'}
-        except Exception as e:
-            logger.error(f"Error in long-term opportunity analysis: {e}")
-            return {'error': str(e)}
-    
-    def analyze_news_opportunities(self, sentiment):
-        """تحلیل فرصت‌های مبتنی بر اخبار"""
-        try:
-            avg_sentiment = sentiment.get('average_sentiment', 0)
-            positive_count = sentiment.get('positive_count', 0)
-            negative_count = sentiment.get('negative_count', 0)
-            
-            # تحلیل فرصت‌ها بر اساس احساسات
-            if avg_sentiment > 0.3:  # احساسات بسیار مثبت
-                return {
-                    'opportunity': 'buy_news',
-                    'confidence': min(0.9, 0.5 + avg_sentiment),
-                    'description': 'احساسات مثبت بازار'
-                }
-            elif avg_sentiment < -0.3:  # احساسات بسیار منفی
-                return {
-                    'opportunity': 'sell_news',
-                    'confidence': min(0.9, 0.5 - avg_sentiment),
-                    'description': 'احساسات منفی بازار'
-                }
-            elif positive_count > negative_count * 2:  # اخبار مثبت بسیار بیشتر
-                return {
-                    'opportunity': 'buy_news',
-                    'confidence': 0.7,
-                    'description': 'اخبار مثبت غالب'
-                }
-            elif negative_count > positive_count * 2:  # اخبار منفی بسیار بیشتر
-                return {
-                    'opportunity': 'sell_news',
-                    'confidence': 0.7,
-                    'description': 'اخبار منفی غالب'
-                }
-            
-            return {'opportunity': 'none', 'confidence': 0.3, 'description': 'فرصت مبتنی بر اخبار مشخصی یافت نشد'}
-        except Exception as e:
-            logger.error(f"Error in news opportunity analysis: {e}")
-            return {'error': str(e)}
-    
-    def calculate_opportunity_score(self, opportunities):
-        """محاسبه امتیاز کلی فرصت‌ها"""
-        try:
-            # وزن‌ها برای هر نوع فرصت
-            weights = {
-                'short_term': 0.3,
-                'long_term': 0.5,
-                'news_based': 0.2
-            }
-            
-            # استخراج امتیازها
-            scores = {}
-            
-            if 'short_term' in opportunities and 'confidence' in opportunities['short_term']:
-                scores['short_term'] = opportunities['short_term']['confidence']
-            else:
-                scores['short_term'] = 0.3
-            
-            if 'long_term' in opportunities and 'confidence' in opportunities['long_term']:
-                scores['long_term'] = opportunities['long_term']['confidence']
-            else:
-                scores['long_term'] = 0.3
-            
-            if 'news_based' in opportunities and 'confidence' in opportunities['news_based']:
-                scores['news_based'] = opportunities['news_based']['confidence']
-            else:
-                scores['news_based'] = 0.3
-            
-            # محاسبه امتیاز نهایی
-            opportunity_score = sum(scores[metric] * weight for metric, weight in weights.items())
-            
-            return min(1.0, max(0.0, opportunity_score))
-        except Exception as e:
-            logger.error(f"Error calculating opportunity score: {e}")
-            return 0.5  # مقدار پیش‌فرض در صورت خطا
-    
-    def analyze_market_timing(self, historical_data):
-        """تحلیل زمان‌بندی بازار"""
-        try:
-            if len(historical_data) < 50:
-                return {'error': 'Not enough data for timing analysis'}
-            
-            # محاسبه شاخص‌های زمان‌بندی
-            data = historical_data.copy()
-            
-            # محاسبه نوسان‌ها
-            data['volatility'] = data['Close'].pct_change().rolling(window=20).std()
-            
-            # محاسبه شاخص قدرت نسبی (RSI)
-            delta = data['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            data['rsi'] = 100 - (100 / (1 + rs))
-            
-            # تحلیل زمان‌بندی
-            current_volatility = data['volatility'].iloc[-1]
-            current_rsi = data['rsi'].iloc[-1]
-            
-            # تحلیل زمان‌بندی بر اساس نوسان و RSI
-            if current_volatility < 0.015 and current_rsi < 30:  # نوسان کم و RSI پایین
-                return {
-                    'timing': 'buy',
-                    'confidence': 0.8,
-                    'description': 'زمان خرید مناسب (نوسان کم و اشباع فروش)'
-                }
-            elif current_volatility < 0.015 and current_rsi > 70:  # نوسان کم و RSI بالا
-                return {
-                    'timing': 'sell',
-                    'confidence': 0.8,
-                    'description': 'زمان فروش مناسب (نوسان کم و اشباع خرید)'
-                }
-            elif current_volatility > 0.03:  # نوسان بالا
-                return {
-                    'timing': 'wait',
-                    'confidence': 0.7,
-                    'description': 'منتظر کاهش نوسان بمانید'
-                }
-            
-            return {'timing': 'neutral', 'confidence': 0.5, 'description': 'زمان‌بندی خنثی'}
-        except Exception as e:
-            logger.error(f"Error in market timing analysis: {e}")
-            return {'error': str(e)}
-    
-    def analyze_price_behavior(self, historical_data):
-        """تحلیل رفتار قیمت"""
-        try:
-            if len(historical_data) < 30:
-                return {'error': 'Not enough data for behavior analysis'}
-            
-            # محاسبه شاخص‌های رفتاری
-            data = historical_data.copy()
-            
-            # محاسبه تغییرات قیمت
-            data['change'] = data['Close'].pct_change()
-            
-            # محاسبه میانگین متحرک‌ها
-            data['sma_10'] = data['Close'].rolling(window=10).mean()
-            data['sma_30'] = data['Close'].rolling(window=30).mean()
-            
-            # تحلیل رفتار قیمت
-            current_price = data['Close'].iloc[-1]
-            sma_10 = data['sma_10'].iloc[-1]
-            sma_30 = data['sma_30'].iloc[-1]
-            
-            # تحلیل روند کوتاه مدت
-            if current_price > sma_10 > sma_30:  # روند صعودی قوی
-                return {
-                    'behavior': 'strong_uptrend',
-                    'confidence': 0.8,
-                    'description': 'روند صعودی قوی'
-                }
-            elif current_price < sma_10 < sma_30:  # روند نزولی قوی
-                return {
-                    'behavior': 'strong_downtrend',
-                    'confidence': 0.8,
-                    'description': 'روند نزولی قوی'
-                }
-            elif current_price > sma_10 and current_price < sma_30:  # اصلاح صعودی
-                return {
-                    'behavior': 'bullish_correction',
-                    'confidence': 0.6,
-                    'description': 'اصلاح در روند صعودی'
-                }
-            elif current_price < sma_10 and current_price > sma_30:  # اصلاح نزولی
-                return {
-                    'behavior': 'bearish_correction',
-                    'confidence': 0.6,
-                    'description': 'اصلاح در روند نزولی'
-                }
-            
-            return {'behavior': 'neutral', 'confidence': 0.5, 'description': 'رفتار قیمت خنثی'}
-        except Exception as e:
-            logger.error(f"Error in price behavior analysis: {e}")
-            return {'error': str(e)}
-    
-    def calculate_signal_score(self, analysis):
-        """محاسبه امتیاز سیگنال نهایی"""
-        try:
-            # وزن‌ها برای هر بخش تحلیل
-            weights = {
-                'technical': 0.4,
-                'sentiment': 0.2,
-                'elliott': 0.1,
-                'supply_demand': 0.1,
-                'ai_analysis': 0.2
-            }
-            
-            # استخراج امتیازها
-            scores = {}
-            
-            # امتیاز تحلیل تکنیکال
-            technical = analysis.get('technical', {})
-            if technical:
-                # استخراج RSI
-                classical = technical.get('classical', {})
-                rsi = classical.get('rsi', {}).get('14', 50)
-                
-                # استخراج روند
-                trend = classical.get('trend', {}).get('direction', 'خنثی')
-                
-                # محاسبه امتیاز تکنیکال
-                if rsi < 30 and trend == 'صعودی':
-                    scores['technical'] = 0.8
-                elif rsi > 70 and trend == 'نزولی':
-                    scores['technical'] = 0.2
-                elif 30 <= rsi <= 70:
-                    scores['technical'] = 0.5
-                else:
-                    scores['technical'] = 0.5
-            else:
-                scores['technical'] = 0.5
-            
-            # امتیاز تحلیل احساسات
-            sentiment = analysis.get('sentiment', {})
-            avg_sentiment = sentiment.get('average_sentiment', 0)
-            scores['sentiment'] = (avg_sentiment + 1) / 2  # تبدیل به محدوده 0-1
-            
-            # امتیاز تحلیل امواج الیوت
-            elliott = analysis.get('elliott', {})
-            elliott_pattern = elliott.get('current_pattern', 'unknown')
-            elliott_confidence = elliott.get('confidence', 0.3)
-            
-            if elliott_pattern == 'impulse_up':
-                scores['elliott'] = 0.8 * elliott_confidence
-            elif elliott_pattern == 'corrective_down':
-                scores['elliott'] = 0.2 * elliott_confidence
-            else:
-                scores['elliott'] = 0.5
-            
-            # امتیاز تحلیل عرضه و تقاضا
-            supply_demand = analysis.get('supply_demand', {})
-            supply_score = supply_demand.get('score', 0.5)
-            scores['supply_demand'] = supply_score
-            
-            # امتیاز تحلیل هوش مصنوعی
-            ai_analysis = analysis.get('ai_analysis', {})
-            opportunities = ai_analysis.get('opportunities', {})
-            opportunity_score = opportunities.get('overall_score', 0.5)
-            scores['ai_analysis'] = opportunity_score
-            
-            # محاسبه امتیاز نهایی
-            signal_score = sum(scores[metric] * weight for metric, weight in weights.items())
-            
-            return min(1.0, max(0.0, signal_score))
-        except Exception as e:
-            logger.error(f"Error calculating signal score: {e}")
-            return 0.5  # مقدار پیش‌فرض در صورت خطا
-
-
-if __name__ == '__main__':
-    # ایجاد نمونه ربات
-    bot = AdvancedTradingBot()
-    
-    # ساخت اپلیکیشن تلگرام
-    application = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
-    
-    # تنظیم هندلرها
-    from telegram_handlers import setup_handlers
-    setup_handlers(application, bot)
-    
-    # اجرای ربات
-    application.run_polling()
+    def
