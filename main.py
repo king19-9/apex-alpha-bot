@@ -157,7 +157,6 @@ class AdvancedTradingBot:
         self.analysis_methods = {
             'wyckoff': self.wyckoff_analysis,
             'volume_profile': self.volume_profile_analysis,
-            'market_profile': self.market_profile_analysis,
             'fibonacci': self.fibonacci_analysis,
             'harmonic_patterns': self.harmonic_patterns_analysis,
             'ichimoku': self.ichimoku_analysis,
@@ -198,9 +197,11 @@ class AdvancedTradingBot:
             if LIBRARIES['psycopg2']:
                 import psycopg2
                 self.conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+                self.is_postgres = True
                 logger.info("PostgreSQL connection established")
             else:
                 self.conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
+                self.is_postgres = False
                 logger.warning("Using SQLite as fallback")
             
             self.create_tables()
@@ -208,6 +209,7 @@ class AdvancedTradingBot:
             logger.error(f"Database setup failed: {e}")
             # فallback به SQLite
             self.conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
+            self.is_postgres = False
             self.create_tables()
     
     def setup_exchanges(self):
@@ -267,60 +269,68 @@ class AdvancedTradingBot:
         """ایجاد جداول پایگاه داده"""
         cursor = self.conn.cursor()
         
+        # تعیین نوع کلید اصلی بر اساس نوع پایگاه داده
+        if self.is_postgres:
+            id_type = "SERIAL PRIMARY KEY"
+            timestamp_type = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        else:
+            id_type = "INTEGER PRIMARY KEY AUTOINCREMENT"
+            timestamp_type = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        
         # جدول کاربران
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             first_name TEXT,
             language TEXT DEFAULT 'fa',
             preferences TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at {timestamp_type}
         )
         ''')
         
         # جدول تحلیل‌ها
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS analyses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             user_id INTEGER,
             symbol TEXT,
             analysis_type TEXT,
             result TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            timestamp {timestamp_type},
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
         ''')
         
         # جدول سیگنال‌ها
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             user_id INTEGER,
             symbol TEXT,
             signal_type TEXT,
             signal_value TEXT,
             confidence REAL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            timestamp {timestamp_type},
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
         ''')
         
         # جدول واچ‌لیست
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS watchlist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             user_id INTEGER,
             symbol TEXT,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            added_at {timestamp_type},
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
         ''')
         
         # جدول عملکرد
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS performance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             user_id INTEGER,
             symbol TEXT,
             strategy TEXT,
@@ -328,29 +338,29 @@ class AdvancedTradingBot:
             exit_price REAL,
             profit_loss REAL,
             duration INTEGER,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            timestamp {timestamp_type},
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
         ''')
         
         # جدول داده‌های بازار
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS market_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             symbol TEXT,
             source TEXT,
             price REAL,
             volume_24h REAL,
             market_cap REAL,
             price_change_24h REAL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            timestamp {timestamp_type}
         )
         ''')
         
         # جدول اخبار
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS news (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             title TEXT,
             content TEXT,
             source TEXT,
@@ -358,26 +368,26 @@ class AdvancedTradingBot:
             published_at TIMESTAMP,
             sentiment_score REAL,
             symbols TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            timestamp {timestamp_type}
         )
         ''')
         
         # جدول تحلیل‌های هوش مصنوعی
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS ai_analysis (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             symbol TEXT,
             analysis_type TEXT,
             result TEXT,
             confidence REAL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            timestamp {timestamp_type}
         )
         ''')
         
         # جدول داده‌های اقتصادی
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS economic_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             event_type TEXT,
             event_name TEXT,
             event_date TIMESTAMP,
@@ -385,14 +395,14 @@ class AdvancedTradingBot:
             forecast_value REAL,
             previous_value REAL,
             impact TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            timestamp {timestamp_type}
         )
         ''')
         
         # جدول داده‌های جلسه معاملاتی
-        cursor.execute('''
+        cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS trading_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             symbol TEXT,
             session_type TEXT,
             session_start TIMESTAMP,
@@ -400,7 +410,7 @@ class AdvancedTradingBot:
             high_price REAL,
             low_price REAL,
             volume REAL,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            timestamp {timestamp_type}
         )
         ''')
         
@@ -1257,11 +1267,11 @@ class AdvancedTradingBot:
                 'error': str(e)
             }
     
-    def get_historical_data(self, symbol, period='1y'):
+    def get_historical_data(self, symbol, period='1y', interval='1d'):
         """دریافت داده‌های تاریخی"""
         try:
             # تلاش برای دریافت داده از Yahoo Finance
-            data = yf.download(f'{symbol}-USD', period=period, interval='1d')
+            data = yf.download(f'{symbol}-USD', period=period, interval=interval)
             if data.empty:
                 # اگر داده‌ای دریافت نشد، داده‌های ساختگی برگردان
                 return self.generate_dummy_data(symbol)
@@ -1395,7 +1405,7 @@ class AdvancedTradingBot:
             kijun_sen = (high.rolling(window=26).max() + low.rolling(window=26).min()) / 2
             senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
             senkou_span_b = ((high.rolling(window=52).max() + low.rolling(window=52).min()) / 2).shift(26)
-            chikou_span = close.shift(-26)  # خطای اصلی اینجا بود - کوتیشن پایانی اضافه شد
+            chikou_span = close.shift(-26)
             
             # مقادیر فعلی
             current_tenkan = tenkan_sen.iloc[-1] if not pd.isna(tenkan_sen.iloc[-1]) else 0
@@ -1413,7 +1423,7 @@ class AdvancedTradingBot:
                 'kijun_sen': current_kijun,
                 'senkou_span_a': current_senkou_a,
                 'senkou_span_b': current_senkou_b,
-                'chikou_span': current_chikou,  # خطای اصلی اینجا بود - کوتیشن پایانی اضافه شد
+                'chikou_span': current_chikou,
                 'price_above_kumo': price_above_kumo
             }
         except Exception as e:
@@ -1844,6 +1854,7 @@ class AdvancedTradingBot:
             close = data['Close']
             high = data['High']
             low = data['Low']
+            volume = data['Volume']
             
             # پیدا کردن نقاط چرخش
             peaks, _ = find_peaks(high, distance=5)

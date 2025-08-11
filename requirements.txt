@@ -1,7 +1,7 @@
 python-telegram-bot
 python-dotenv
-numpy
-pandas
+numpy==1.23.5
+pandas==1.5.3
 yfinance
 ccxt
 aiohttp
@@ -12,5 +12,5 @@ scikit-learn
 scipy
 psycopg2-binary
 TA-Lib
-pandas-ta
+pandas-ta==0.3.14b
 pytz
