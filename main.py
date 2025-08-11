@@ -1617,4 +1617,33 @@ class AdvancedTradingBot:
             # محاسبه اجزای ابر ایچیموکو
             high_9 = data['High'].rolling(window=9).max()
             low_9 = data['Low'].rolling(window=9).min()
-            high_26 = data['High'].rolling(window
+            high_26 = data['High'].rolling(window=26).max()
+            low_26 = data['Low'].rolling(window=26).min()
+            high_52 = data['High'].rolling(window=52).max()
+            low_52 = data['Low'].rolling(window=52).min()
+            
+            # Tenkan-sen (Conversion Line)
+            tenkan_sen = (high_9 + low_9) / 2
+            
+            # Kijun-sen (Base Line)
+            kijun_sen = (high_26 + low_26) / 2
+            
+            # Senkou Span A (Leading Span A)
+            senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
+            
+            # Senkou Span B (Leading Span B)
+            senkou_span_b = ((high_52 + low_52) / 2).shift(26)
+            
+            # Chikou Span (Lagging Span)
+            chikou_span = data['Close'].shift(-26)
+            
+            # ابر ایچیموکو (Kumo)
+            kumo_upper = senkou_span_a.combine(senkou_span_b, max)
+            kumo_lower = senkou_span_a.combine(senkou_span_b, min)
+            
+            return {
+                'tenkan_sen': tenkan_sen.iloc[-1],
+                'kijun_sen': kijun_sen.iloc[-1],
+                'senkou_span_a': senkou_span_a.iloc[-1],
+                'senkou_span_b': senkou_span_b.iloc[-1],
+                'chikou_span
