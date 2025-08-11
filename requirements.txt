@@ -1,16 +1,32 @@
-python-telegram-bot
+# Core & Web
+requests
+aiohttp
+asyncio-throttle
 python-dotenv
+beautifulsoup4
+
+# Data Analysis & Numerics
 numpy
 pandas
-yfinance
-ccxt
-aiohttp
-requests
-beautifulsoup4
-asyncio-throttle
-scikit-learn
 scipy
-psycopg2-binary
+yfinance
+
+# Technical Analysis
 TA-Lib
-pandas-ta
+pandas_ta
+
+# Machine Learning
+scikit-learn
+xgboost
+lightgbm
+# prophet
+# tensorflow-cpu
+
+# Database
+psycopg2-binary
+
+# Telegram
+python-telegram-bot[httpx]
+
+# Utilities
 pytz

@@ -1,0 +1,12 @@
+[phases.setup]
+# System-level packages needed for compiling Python libraries
+aptPkgs = [
+    "build-essential",
+    "pkg-config",
+    "libpq-dev",
+    "libta-lib0",
+    "libta-lib-dev"
+]
+
+[start]
+cmd = "python main.py"
