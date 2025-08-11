@@ -1476,7 +1476,7 @@ class AdvancedTradingBot:
                 upper = price_levels[i + 1]
                 mask = (close >= lower) & (close < upper)
                 total_volume = volume[mask].sum()
-                volume_profile[(lower + upper) / 2] = total_volume
+                volume_profile[float(f"{(lower + upper) / 2:.2f}")] = total_volume
             
             # پیدا کردن POC (Point of Control)
             poc_price = max(volume_profile, key=volume_profile.get) if volume_profile else close.iloc[-1]
@@ -1564,8 +1564,8 @@ class AdvancedTradingBot:
             close = data['Close']
             
             # پیدا کردن نقاط چرخش (پیک و دره)
-            peaks, _ = find_peaks(high, distance=5)
-            troughs, _ = find_peaks(-low, distance=5)
+            peaks, _ = find_peaks(high.values, distance=5)
+            troughs, _ = find_peaks(-low.values, distance=5)
             
             # ترکیب نقاط
             pivot_points = sorted(list(peaks) + list(troughs))
@@ -1611,8 +1611,8 @@ class AdvancedTradingBot:
             low = data['Low']
             
             # پیدا کردن سطوح حمایت و مقاومت
-            peaks, _ = find_peaks(high, distance=5)
-            troughs, _ = find_peaks(-low, distance=5)
+            peaks, _ = find_peaks(high.values, distance=5)
+            troughs, _ = find_peaks(-low.values, distance=5)
             
             # محاسبه سطوح
             resistance_levels = [high.iloc[i] for i in peaks]
@@ -1777,10 +1777,10 @@ class AdvancedTradingBot:
             return {}
         
         try:
-            open_price = data['Open']
-            high = data['High']
-            low = data['Low']
-            close = data['Close']
+            open_price = data['Open'].values
+            high = data['High'].values
+            low = data['Low'].values
+            close = data['Close'].values
             
             patterns_found = []
             
@@ -1789,11 +1789,11 @@ class AdvancedTradingBot:
                 pattern_func = getattr(talib, f'CDL{pattern_name.upper()}', None)
                 if pattern_func:
                     pattern_result = pattern_func(open_price, high, low, close)
-                    if pattern_result.iloc[-1] != 0:
+                    if pattern_result[-1] != 0:
                         patterns_found.append({
                             'pattern': pattern_name,
                             'description': description,
-                            'strength': abs(pattern_result.iloc[-1]) / 100
+                            'strength': abs(pattern_result[-1]) / 100
                         })
             
             return {
@@ -1814,8 +1814,8 @@ class AdvancedTradingBot:
             
             # تحلیل ساده امواج الیوت
             # پیدا کردن نقاط چرخش
-            peaks, _ = find_peaks(close, distance=5)
-            troughs, _ = find_peaks(-close, distance=5)
+            peaks, _ = find_peaks(close.values, distance=5)
+            troughs, _ = find_peaks(-close.values, distance=5)
             
             # ترکیب نقاط
             pivot_points = sorted(list(peaks) + list(troughs))
@@ -1857,8 +1857,8 @@ class AdvancedTradingBot:
             volume = data['Volume']
             
             # پیدا کردن نقاط چرخش
-            peaks, _ = find_peaks(high, distance=5)
-            troughs, _ = find_peaks(-low, distance=5)
+            peaks, _ = find_peaks(high.values, distance=5)
+            troughs, _ = find_peaks(-low.values, distance=5)
             
             # شناسایی ساختار بازار
             market_trend = 'صعودی' if close.iloc[-1] > close.iloc[-20] else 'نزولی'
@@ -2154,8 +2154,8 @@ class AdvancedTradingBot:
             
             # محاسبه شاخص‌های عرضه و تقاضا
             # 1. حجم در نقاط چرخش
-            peaks, _ = find_peaks(close, distance=5)
-            troughs, _ = find_peaks(-close, distance=5)
+            peaks, _ = find_peaks(close.values, distance=5)
+            troughs, _ = find_peaks(-close.values, distance=5)
             
             supply_volume = volume.iloc[peaks].mean() if len(peaks) > 0 else 0
             demand_volume = volume.iloc[troughs].mean() if len(troughs) > 0 else 0
