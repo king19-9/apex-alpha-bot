@@ -1,7 +1,6 @@
 # Core & Web
 requests
 aiohttp
-asyncio-throttle
 python-dotenv
 beautifulsoup4
 
@@ -15,18 +14,20 @@ yfinance
 TA-Lib
 pandas_ta
 
-# Machine Learning
+# Machine Learning & AI
 scikit-learn
 xgboost
 lightgbm
-# prophet
-# tensorflow-cpu
+# prophet # این کتابخانه نصب پیچیده‌ای دارد، در صورت نیاز فعال شود
+# tensorflow-cpu # برای مدل‌های LSTM/GRU
 
 # Database
 psycopg2-binary
 
-# Telegram
+# Telegram Bot
 python-telegram-bot[httpx]
 
 # Utilities
 pytz
+redis
+asyncio-throttle

@@ -1,496 +1,125 @@
-# bot_logic.py
+# main.py
 import os
 import logging
 import asyncio
-import json
-import numpy as np
-import pandas as pd
-import yfinance as yf
-import ccxt
-import sqlite3
-import aiohttp
-import requests
 import time
-from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
-from asyncio_throttle import Throttler
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.svm import SVR
-from sklearn.neighbors import KNeighborsRegressor
+import pytz
 import re
-from collections import Counter
-from scipy.signal import find_peaks
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
+from dotenv import load_dotenv
 
-# --- کتابخانه‌های اختیاری ---
-LIBRARIES = {
-    'tensorflow': False, 'talib': False, 'pandas_ta': False, 'pywt': False,
-    'lightgbm': False, 'xgboost': False, 'prophet': False, 'statsmodels': False,
-    'psycopg2': False
-}
+from config import Config
+from bot import AdvancedTradingBot
 
-for lib in LIBRARIES:
-    try:
-        globals()[lib] = __import__(lib)
-        LIBRARIES[lib] = True
-    except ImportError:
-        logging.warning(f"Optional library not found: {lib}.")
+# --- تنظیمات لاگینگ ---
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s')
+logger = logging.getLogger("TradingBot")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    file_handler = logging.FileHandler('bot_activity.log', encoding='utf-8')
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(file_handler)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(log_formatter)
+    logger.addHandler(stream_handler)
 
-logger = logging.getLogger(__name__)
+# --- نمونه‌سازی از ربات ---
+try:
+    bot_instance = AdvancedTradingBot()
+except Exception as e:
+    logger.critical(f"Could not initialize the bot. Shutting down. Error: {e}", exc_info=True)
+    exit()
 
-class AdvancedTradingBot:
-    def __init__(self, proxy_settings=None):
-        logger.info("Initializing AdvancedTradingBot...")
-        
-        self.session = requests.Session()
-        self.proxy_dict = {}
-        if proxy_settings and proxy_settings.get('proxy', {}).get('url'):
-            self.proxy_dict = {
-                'http': proxy_settings['proxy']['url'],
-                'https': proxy_settings['proxy']['url']
-            }
-            self.session.proxies = self.proxy_dict
-            if proxy_settings['proxy'].get('username'):
-                self.session.auth = (proxy_settings['proxy']['username'], proxy_settings['proxy']['password'])
-            logger.info("Proxy configured for requests session.")
+# --- توابع مدیریت دستورات تلگرام ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("سلام! برای تحلیل، نماد ارز (مانند BTC) را ارسال کنید.")
 
-        self.throttler = Throttler(rate_limit=5, period=1.0)
-        self.conn = None
-        self.setup_database()
-        
-        self.models = self.initialize_models()
-        self.exchanges = self.setup_exchanges()
-        
-        self.api_keys = {
-            'coingecko': os.getenv('COINGECKO_API_KEY'), 'news': os.getenv('NEWS_API_KEY'),
-            'cryptopanic': os.getenv('CRYPTOPANIC_API_KEY'), 'coinmarketcap': os.getenv('COINMARKETCAP_API_KEY'),
-            'cryptocompare': os.getenv('CRYPTOCOMPARE_API_KEY'), 'binance': os.getenv('BINANCE_API_KEY'),
-            'coinalyze': os.getenv('COINANALYZE_API_KEY')
-        }
-        
-        self.internet_available = self.test_internet_connection()
-        logger.info(f"Internet available: {self.internet_available}")
-        
-        self.offline_mode = not self.internet_available
-        if self.offline_mode:
-            logger.warning("Internet connection not available. Operating in offline mode.")
-        
-        self.setup_text_analysis()
-        self.setup_advanced_analysis()
-        
-        logger.info("AdvancedTradingBot initialized successfully")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("این ربات تحلیل‌های تکنیکال و فاندامنتال جامعی ارائه می‌دهد.")
 
-    def setup_database(self):
-        try:
-            database_url = os.getenv("DATABASE_URL")
-            if LIBRARIES['psycopg2'] and database_url:
-                self.conn = psycopg2.connect(database_url)
-                logger.info("PostgreSQL connection established.")
-            else:
-                logger.warning("Using SQLite as fallback.")
-                self.conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
-            self.create_tables()
-        except Exception as e:
-            logger.error(f"Database setup failed: {e}.", exc_info=True)
-            self.conn = sqlite3.connect('trading_bot.db', check_same_thread=False)
-            self.create_tables()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbol = update.message.text.strip().upper()
+    if re.match("^[A-Z0-9]{2,10}$", symbol):
+        await process_analysis_request(update, symbol)
+    else:
+        await update.message.reply_text("لطفاً یک نماد معتبر ارسال کنید.")
 
-    def setup_exchanges(self):
-        exchanges = {}
-        ccxt_config = {}
-        if self.proxy_dict:
-            ccxt_config['proxies'] = self.proxy_dict
-            if self.session.auth:
-                 ccxt_config['proxyAuth'] = f"{self.session.auth[0]}:{self.session.auth[1]}"
-
-        for ex_name in ['binance', 'coinbase', 'kucoin', 'bybit', 'gateio', 'huobi', 'okx']:
-            try:
-                exchanges[ex_name] = getattr(ccxt, ex_name)(ccxt_config)
-            except Exception as e:
-                logger.error(f"Failed to initialize exchange {ex_name}: {e}")
-        return exchanges
-
-    def create_tables(self):
-        is_postgres = LIBRARIES['psycopg2'] and hasattr(self.conn, 'dsn')
-        auto_increment = "SERIAL PRIMARY KEY" if is_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
-        
-        cursor = self.conn.cursor()
-        
-        commands = [
-            f'''CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, language TEXT DEFAULT 'fa', preferences TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS analyses (id {auto_increment}, user_id BIGINT, symbol TEXT, analysis_type TEXT, result TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS signals (id {auto_increment}, user_id BIGINT, symbol TEXT, signal_type TEXT, signal_value TEXT, confidence REAL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS watchlist (id {auto_increment}, user_id BIGINT, symbol TEXT, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS performance (id {auto_increment}, user_id BIGINT, symbol TEXT, strategy TEXT, entry_price REAL, exit_price REAL, profit_loss REAL, duration INTEGER, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS market_data (id {auto_increment}, symbol TEXT, source TEXT, price REAL, volume_24h REAL, market_cap REAL, price_change_24h REAL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS news (id {auto_increment}, title TEXT, content TEXT, source TEXT, url TEXT, published_at TIMESTAMP, sentiment_score REAL, symbols TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS ai_analysis (id {auto_increment}, symbol TEXT, analysis_type TEXT, result TEXT, confidence REAL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS economic_data (id {auto_increment}, event_type TEXT, event_name TEXT, event_date TIMESTAMP, actual_value REAL, forecast_value REAL, previous_value REAL, impact TEXT, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''',
-            f'''CREATE TABLE IF NOT EXISTS trading_sessions (id {auto_increment}, symbol TEXT, session_type TEXT, session_start TIMESTAMP, session_end TIMESTAMP, high_price REAL, low_price REAL, volume REAL, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'''
-        ]
-        
-        for command in commands:
-            try:
-                cursor.execute(command)
-            except Exception as e:
-                self.conn.rollback()
-                logger.error(f"Failed to execute command: {command}\nError: {e}")
-        
-        self.conn.commit()
-        logger.info("Database tables checked/created.")
-
-    def initialize_models(self):
-        models = {
-            'random_forest': RandomForestRegressor(n_estimators=100, random_state=42),
-            'gradient_boosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
-            'svm': SVR(kernel='rbf'), 'knn': KNeighborsRegressor(), 'linear_regression': LinearRegression()
-        }
-        if LIBRARIES['xgboost']: models['xgboost'] = xgboost.XGBRegressor(n_estimators=100, random_state=42)
-        if LIBRARIES['lightgbm']: models['lightgbm'] = lightgbm.LGBMRegressor(n_estimators=100, random_state=42)
-        if LIBRARIES['prophet']: models['prophet'] = prophet.Prophet()
-        if LIBRARIES['tensorflow']:
-            models['lstm'] = self.build_lstm_model()
-            models['gru'] = self.build_gru_model()
-        logger.info(f"Initialized ML models: {list(models.keys())}")
-        return models
-
-    def build_lstm_model(self):
-        if not LIBRARIES['tensorflow']: return None
-        model = tensorflow.keras.Sequential([
-            tensorflow.keras.layers.LSTM(50, return_sequences=True, input_shape=(60, 5)),
-            tensorflow.keras.layers.Dropout(0.2),
-            tensorflow.keras.layers.LSTM(50),
-            tensorflow.keras.layers.Dropout(0.2),
-            tensorflow.keras.layers.Dense(25),
-            tensorflow.keras.layers.Dense(1)
-        ])
-        model.compile(optimizer='adam', loss='mse')
-        return model
-
-    def build_gru_model(self):
-        if not LIBRARIES['tensorflow']: return None
-        model = tensorflow.keras.Sequential([
-            tensorflow.keras.layers.GRU(50, return_sequences=True, input_shape=(60, 5)),
-            tensorflow.keras.layers.Dropout(0.2),
-            tensorflow.keras.layers.GRU(50),
-            tensorflow.keras.layers.Dropout(0.2),
-            tensorflow.keras.layers.Dense(25),
-            tensorflow.keras.layers.Dense(1)
-        ])
-        model.compile(optimizer='adam', loss='mse')
-        return model
-        
-    def setup_advanced_analysis(self):
-        self.analysis_methods = {
-            'technical_analysis': self.advanced_technical_analysis,
-            'wyckoff': self.wyckoff_analysis,
-            'volume_profile': self.volume_profile_analysis,
-            'market_profile': self.market_profile_analysis,
-            'fibonacci': self.fibonacci_analysis,
-            'harmonic_patterns': self.harmonic_patterns_analysis,
-            'ichimoku': self.ichimoku_analysis,
-            'support_resistance': self.support_resistance_analysis,
-            'trend_lines': self.trend_lines_analysis,
-            'order_flow': self.order_flow_analysis,
-            'vwap': self.vwap_analysis,
-            'pivot_points': self.pivot_points_analysis,
-            'candlestick_patterns': self.advanced_candlestick_patterns,
-            'elliott_wave': self.advanced_elliott_wave,
-            'market_structure': self.market_structure_analysis
-        }
-        self.harmonic_patterns = {'gartley': {'XA': 0.618, 'AB': 0.618, 'BC': 0.382, 'CD': 1.27}, 'butterfly': {'XA': 0.786, 'AB': 0.786, 'BC': 0.382, 'CD': 1.618}, 'bat': {'XA': 0.382, 'AB': 0.382, 'BC': 0.886, 'CD': 2.618}, 'crab': {'XA': 0.886, 'AB': 0.382, 'BC': 0.618, 'CD': 3.14}}
-        self.advanced_candlesticks = {'three_white_soldiers': 'سه سرباز سفید', 'three_black_crows': 'سه کلاغ سیاه', 'morning_star': 'ستاره صبحگاهی', 'evening_star': 'ستاره عصرگاهی'}
-
-    def test_internet_connection(self):
-        try:
-            response = self.session.get('https://www.google.com', timeout=10)
-            return response.status_code == 200
-        except requests.RequestException:
-            return False
-
-    def setup_text_analysis(self):
-        self.positive_keywords = ['صعود', 'رشد', 'افزایش', 'موفق', 'بالا', 'خرید', 'bullish', 'growth', 'increase', 'success', 'high', 'buy', 'profit', 'gain', 'positive', 'optimistic', 'bull', 'rally', 'surge', 'boom']
-        self.negative_keywords = ['نزول', 'کاهش', 'افت', 'ضرر', 'پایین', 'فروش', 'bearish', 'decrease', 'drop', 'loss', 'low', 'sell', 'negative', 'pessimistic', 'bear', 'crash', 'dump', 'decline', 'fall']
-        self.technical_patterns = {'bullish_engulfing': 'پوشاننده صعودی', 'bearish_engulfing': 'پوشاننده نزولی', 'head_and_shoulders': 'سر و شانه', 'double_top': 'دو قله', 'double_bottom': 'دو کف'}
-
-    async def perform_advanced_analysis(self, symbol):
-        try:
-            async with self.throttler:
-                market_data = await self.get_market_data(symbol)
-            if not market_data or market_data.get('price', 0) == 0:
-                logger.warning(f"Market data for {symbol} is empty. Using offline data.")
-                market_data = self.get_offline_market_data(symbol)
-
-            async with self.throttler:
-                news = await self.fetch_news_from_multiple_sources(symbol)
-                economic_news = await self.fetch_economic_news()
-            
-            sentiment = await self.advanced_sentiment_analysis(news)
-            economic_sentiment = await self.advanced_sentiment_analysis(economic_news)
-            
-            historical_data = self.get_historical_data(symbol)
-            if historical_data.empty:
-                raise ValueError("Historical data is not available.")
-            
-            advanced_analysis_results = {}
-            for method_name, method_func in self.analysis_methods.items():
-                try:
-                    advanced_analysis_results[method_name] = method_func(historical_data)
-                except Exception as e:
-                    logger.error(f"Error in '{method_name}' analysis for {symbol}: {e}", exc_info=False)
-                    advanced_analysis_results[method_name] = {"error": str(e)}
-
-            ai_analysis_result = {}
-            try:
-                ai_analysis_result = self.perform_ai_analysis(historical_data, market_data, sentiment, economic_sentiment)
-            except Exception as e:
-                logger.error(f"Error in AI analysis: {e}")
-                ai_analysis_result = {"error": str(e)}
-
-            combined_analysis = {
-                'symbol': symbol, 'market_data': market_data, 'sentiment': sentiment,
-                'economic_sentiment': economic_sentiment, 'ai_analysis': ai_analysis_result,
-                'advanced_analysis': advanced_analysis_results, 'timestamp': datetime.now().isoformat()
-            }
-            
-            signal_score = self.calculate_final_signal_score(combined_analysis)
-            signal = 'BUY' if signal_score > 0.65 else 'SELL' if signal_score < 0.35 else 'HOLD'
-            combined_analysis['signal'] = signal
-            combined_analysis['confidence'] = signal_score
-            
-            return combined_analysis
-        except Exception as e:
-            logger.critical(f"A critical error occurred in perform_advanced_analysis for {symbol}: {e}", exc_info=True)
-            return {'symbol': symbol, 'signal': 'ERROR', 'confidence': 0.0, 'error': str(e)}
-
-    async def fetch_data_from_multiple_sources(self, symbol):
-        data = {}
-        if self.offline_mode:
-            return self.generate_offline_data(symbol)
-        
-        async def fetcher(name, coro):
-            try: return name, await coro
-            except Exception as e:
-                logger.warning(f"Could not fetch from {name} for {symbol}: {e}")
-                return name, {}
-        
-        tasks = [
-            fetcher('coingecko', self.fetch_coingecko_data(symbol)),
-            fetcher('cryptocompare', self.fetch_cryptocompare_data(symbol)),
-            fetcher('exchanges', self.fetch_exchange_data(symbol))
-        ]
-        results = await asyncio.gather(*tasks)
-        data = dict(results)
-
-        if not any(val for val in data.values() if val):
-            return self.generate_offline_data(symbol)
-        return data
-
-    def generate_offline_data(self, symbol):
-        base_prices = {'BTC': 60000, 'ETH': 3000, 'SOL': 150}
-        base_price = base_prices.get(symbol.upper(), 100)
-        change = np.random.uniform(-0.05, 0.05)
-        price = base_price * (1 + change)
-        return {
-            'coingecko': {'price': price, 'market_cap': price * 20e6, 'volume_24h': price * 1e6, 'percent_change_24h': change * 100},
-            'exchanges': {'binance': {'price': price, 'volume': price * 1e6, 'change': change * 100}}
-        }
-
-    async def fetch_coingecko_data(self, symbol):
-        id_map = {'BTC': 'bitcoin', 'ETH': 'ethereum', 'BNB': 'binancecoin', 'SOL': 'solana'}
-        coin_id = id_map.get(symbol.upper(), symbol.lower())
-        
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.coingecko.com/api/v3/simple/price"
-            params = {'ids': coin_id, 'vs_currencies': 'usd', 'include_market_cap': 'true', 'include_24hr_vol': 'true', 'include_24hr_change': 'true'}
-            if self.api_keys['coingecko']: params['x_cg_demo_api_key'] = self.api_keys['coingecko']
-            
-            async with session.get(url, params=params, proxy=self.proxy_dict.get('http')) as response:
-                response.raise_for_status()
-                data = await response.json()
-                cg_data = data.get(coin_id, {})
-                return {'price': cg_data.get('usd'), 'market_cap': cg_data.get('usd_market_cap'), 'volume_24h': cg_data.get('usd_24h_vol'), 'percent_change_24h': cg_data.get('usd_24h_change')}
-
-    async def fetch_cryptocompare_data(self, symbol):
-        if not self.api_keys['cryptocompare']: return {}
-        async with aiohttp.ClientSession() as session:
-            url = "https://min-api.cryptocompare.com/data/pricemultifull"
-            params = {'fsyms': symbol, 'tsyms': 'USD', 'api_key': self.api_keys['cryptocompare']}
-            async with session.get(url, params=params, proxy=self.proxy_dict.get('http')) as response:
-                response.raise_for_status()
-                data = await response.json()
-                raw_data = data.get('RAW', {}).get(symbol.upper(), {}).get('USD', {})
-                return {'price': raw_data.get('PRICE'), 'volume_24h': raw_data.get('VOLUME24HOURTO'), 'percent_change_24h': raw_data.get('CHANGEPCT24HOUR')}
-
-    async def fetch_exchange_data(self, symbol):
-        if self.offline_mode: return self.generate_offline_exchange_data(symbol)
-        
-        target_exchange = 'binance' 
-        exchange = self.exchanges.get(target_exchange)
-        if not exchange: return {}
-        
-        try:
-            exchange_symbol = self.convert_symbol_for_exchange(symbol, target_exchange)
-            ticker = exchange.fetch_ticker(exchange_symbol)
-            return {target_exchange: {'price': ticker.get('last'), 'volume': ticker.get('quoteVolume'), 'change': ticker.get('change')}}
-        except Exception as e:
-            logger.warning(f"Could not fetch ticker for {symbol} from {target_exchange}: {e}")
-            return {}
-
-    def convert_symbol_for_exchange(self, symbol, exchange_name):
-        return f"{symbol.upper()}/USDT"
-
-    def get_historical_data(self, symbol, period='1y'):
-        try:
-            data = yf.download(f'{symbol}-USD', period=period, interval='1d')
-            if data.empty:
-                return self.generate_dummy_data(symbol)
-            return data
-        except Exception as e:
-            logger.error(f"Error getting historical data for {symbol}: {e}")
-            return self.generate_dummy_data(symbol)
-
-    def generate_dummy_data(self, symbol):
-        base_prices = {'BTC': 60000, 'ETH': 3000, 'SOL': 150}
-        base_price = base_prices.get(symbol.upper(), 100)
-        dates = pd.date_range(end=datetime.now(), periods=365)
-        price_data = base_price + np.random.randn(365).cumsum() * 100
-        data = pd.DataFrame(price_data, index=dates, columns=['Close'])
-        data['Open'] = data['Close'] - np.random.rand(365) * 50
-        data['High'] = data['Close'] + np.random.rand(365) * 50
-        data['Low'] = data['Close'] - np.random.rand(365) * 50
-        data['Volume'] = np.random.randint(1_000_000, 10_000_000, 365)
-        return data
-        
-    async def fetch_news_from_multiple_sources(self, symbol=None):
-        tasks = [
-            self.fetch_cryptopanic_news(symbol),
-            self.fetch_cryptocompare_news(symbol)
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        news = []
-        for result in results:
-            if isinstance(result, list):
-                news.extend(result)
-        return news
+async def process_analysis_request(update: Update, symbol: str):
+    msg = await update.message.reply_text(f"⏳ در حال انجام تحلیل جامع برای *{symbol}*...", parse_mode='Markdown')
     
-    async def fetch_cryptopanic_news(self, symbol=None):
-        if not self.api_keys['cryptopanic']: return []
-        async with aiohttp.ClientSession() as session:
-            url = "https://cryptopanic.com/api/v1/posts/"
-            params = {'auth_token': self.api_keys['cryptopanic'], 'kind': 'news'}
-            if symbol: params['currencies'] = symbol
-            async with session.get(url, params=params, proxy=self.proxy_dict.get('http')) as response:
-                response.raise_for_status()
-                data = await response.json()
-                return data.get('results', [])
-
-    async def fetch_cryptocompare_news(self, symbol=None):
-        if not self.api_keys['cryptocompare']: return []
-        async with aiohttp.ClientSession() as session:
-            url = "https://min-api.cryptocompare.com/data/v2/news/"
-            params = {'api_key': self.api_keys['cryptocompare']}
-            if symbol: params['categories'] = symbol
-            async with session.get(url, params=params, proxy=self.proxy_dict.get('http')) as response:
-                response.raise_for_status()
-                data = await response.json()
-                return data.get('Data', [])
-
-    async def fetch_economic_news(self):
-        if not self.api_keys['news']: return []
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = "https://newsapi.org/v2/everything"
-                params = {
-                    'apiKey': self.api_keys['news'],
-                    'q': 'NFP OR CPI OR FOMC OR "interest rates"',
-                    'language': 'en', 'pageSize': 10
-                }
-                async with session.get(url, params=params) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-                    return data.get('articles', [])
-        except Exception as e:
-            logger.error(f"Error fetching economic news: {e}")
-            return []
-            
-    async def advanced_sentiment_analysis(self, news_items):
-        if not news_items: return {'average_sentiment': 0.5}
+    try:
+        start_time = time.time()
+        result = await bot_instance.perform_full_analysis(symbol)
+        duration = time.time() - start_time
         
-        all_text = " ".join([f"{item.get('title', '')} {item.get('content', '') or item.get('description', '')}" for item in news_items])
+        if "error" in result:
+            await msg.edit_text(f"❌ خطا در تحلیل: {result['error']}")
+            return
+
+        response_text = format_response(result, duration)
+        await msg.edit_text(response_text, parse_mode='Markdown', disable_web_page_preview=True)
+
+    except Exception as e:
+        logger.error(f"Critical error in process_analysis_request for {symbol}: {e}", exc_info=True)
+        await msg.edit_text("یک خطای داخلی رخ داد. لطفاً بعداً دوباره تلاش کنید.")
+
+def format_response(result, duration):
+    symbol = result.get('symbol', 'N/A')
+    market = result.get('market_data', {})
+    signal_info = result.get('final_signal', {})
+    tech = result.get('analysis', {}).get('technical', {})
+
+    signal = signal_info.get('signal', 'N/A')
+    score = signal_info.get('score', 0.5)
+    
+    response = f"📊 *تحلیل برای {symbol}*\n\n"
+    response += f"🚨 *سیگنال نهایی: {signal}* (امتیاز: {score:.2f})\n\n"
+    
+    if market:
+        response += f"📈 قیمت: `${market.get('price', 0):,.2f}`\n"
+        response += f"📊 تغییر ۲۴ ساعته: `{market.get('percent_change_24h', 0):.2f}%`\n\n"
+    
+    if tech:
+        response += "🛠️ *تحلیل تکنیکال:*\n"
+        trend = tech.get('trend', {})
+        oscillators = tech.get('oscillators', {})
+        response += f"  - روند (EMA 50/200): `{trend.get('direction', 'N/A')}`\n"
+        response += f"  - RSI: `{oscillators.get('rsi', 0):.2f}`\n"
         
-        score = 0.5
-        positive_matches = sum(1 for word in self.positive_keywords if word in all_text.lower())
-        negative_matches = sum(1 for word in self.negative_keywords if word in all_text.lower())
-        
-        total_matches = positive_matches + negative_matches
-        if total_matches > 0:
-            score = positive_matches / total_matches
-            
-        return {'average_sentiment': score}
+        patterns = tech.get('candlestick_patterns', {})
+        if patterns:
+            response += f"  - الگوهای شمعی اخیر: `{', '.join(patterns.keys())}`\n"
+    
+    response += f"\n⏱️ (زمان تحلیل: {duration:.2f} ثانیه)"
+    return response
 
-    # --- ALL ANALYSIS METHODS ---
-    def advanced_technical_analysis(self, data):
-        if data.empty: return {}
-        if not LIBRARIES['talib']: return {"error": "TA-Lib not available"}
-        
-        return {
-            'rsi': talib.RSI(data['Close']).iloc[-1],
-            'macd': talib.MACD(data['Close'])[0].iloc[-1],
-            'bollinger_bands': talib.BBANDS(data['Close'])[0].iloc[-1]
-        }
+async def on_shutdown(application: Application):
+    await bot_instance.close_connections()
 
-    def wyckoff_analysis(self, data): return {'phase': 'neutral'}
-    def volume_profile_analysis(self, data): return {}
-    def market_profile_analysis(self, data): return {}
-    def fibonacci_analysis(self, data):
-        if len(data) < 30: return {}
-        high = data['High'][-30:].max()
-        low = data['Low'][-30:].min()
-        diff = high - low
-        return {'retracement_382': low + 0.382 * diff, 'retracement_618': low + 0.618 * diff}
+def main():
+    logger.info("Starting Telegram bot...")
+    
+    if not Config.TELEGRAM_BOT_TOKEN:
+        logger.critical("FATAL: TELEGRAM_BOT_TOKEN is not set!")
+        return
 
-    def harmonic_patterns_analysis(self, data): return {}
-    def ichimoku_analysis(self, data):
-        if not LIBRARIES['pandas_ta']: return {"error": "pandas_ta not available"}
-        ichimoku_df = ta.ichimoku(data['High'], data['Low'], data['Close'])[0]
-        last = ichimoku_df.iloc[-1]
-        price = data['Close'].iloc[-1]
-        
-        price_above_kumo = price > last['ISA_9'] and price > last['ISB_26']
-        price_below_kumo = price < last['ISA_9'] and price < last['ISB_26']
-        
-        return {'tenkan_sen': last['ITS_9'], 'kijun_sen': last['IKS_26'], 'price_above_kumo': price_above_kumo, 'price_below_kumo': price_below_kumo}
+    app_builder = Application.builder().token(Config.TELEGRAM_BOT_TOKEN)
+    if Config.AIOHTTP_PROXY_URL:
+        request = HTTPXRequest(proxy_url=Config.AIOHTTP_PROXY_URL)
+        app_builder.request(request)
+    
+    application = app_builder.post_shutdown(on_shutdown).build()
 
-    def support_resistance_analysis(self, data):
-        peaks, _ = find_peaks(data['High'], distance=10)
-        troughs, _ = find_peaks(-data['Low'], distance=10)
-        return {'resistance_levels': data['High'].iloc[peaks].tail(3).tolist(), 'support_levels': data['Low'].iloc[troughs].tail(3).tolist()}
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    def trend_lines_analysis(self, data): return {}
-    def order_flow_analysis(self, data): return {}
-    def vwap_analysis(self, data): return {}
-    def pivot_points_analysis(self, data): return {}
-    def advanced_candlestick_patterns(self, data): return {}
-    def advanced_elliott_wave(self, data): return {}
-    def market_structure_analysis(self, data): return {}
+    try:
+        application.run_polling()
+    except Exception as e:
+        logger.critical(f"Bot polling failed critically: {e}", exc_info=True)
 
-    def perform_ai_analysis(self, historical_data, market_data, sentiment, economic_sentiment):
-        # This is a placeholder for your AI model logic
-        return {'prediction': 'neutral'}
-
-    def calculate_final_signal_score(self, analysis_data):
-        score = 0.5
-        weights = {'technical': 0.4, 'sentiment': 0.2, 'wyckoff': 0.2, 'ichimoku': 0.2}
-        
-        tech_res = analysis_data.get('advanced_analysis', {}).get('technical_analysis', {})
-        if tech_res and not tech_res.get('error'):
-            rsi = tech_res.get('rsi', 50)
-            if rsi > 70: score -= 0.15 * weights['technical']
-            if rsi < 30: score += 0.15 * weights['technical']
-
-        sentiment_res = analysis_data.get('sentiment', {})
-        if sentiment_res:
-            score += (sentiment_res.get('average_sentiment', 0.5) - 0.5) * weights['sentiment']
-            
-        return max(0, min(1, score))
+if __name__ == '__main__':
+    main()

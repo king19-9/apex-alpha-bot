@@ -3,10 +3,11 @@
 aptPkgs = [
     "build-essential",
     "pkg-config",
-    "libpq-dev",
-    "libta-lib0",
-    "libta-lib-dev"
+    "libpq-dev",        # For psycopg2
+    "libta-lib0",       # For TA-Lib
+    "libta-lib-dev"     # For TA-Lib
 ]
 
 [start]
+# Command to run the application
 cmd = "python main.py"
