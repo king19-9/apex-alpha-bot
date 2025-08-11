@@ -35,6 +35,16 @@ from scipy.signal import find_peaks
 from scipy.stats import pearsonr
 import talib
 
+# مدیریت خطای pandas_ta به دلیل عدم سازگاری با numpy جدید
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except (ImportError, ValueError) as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"pandas_ta not available due to compatibility issues: {e}")
+    PANDAS_TA_AVAILABLE = False
+    ta = None
+
 # بارگذاری متغیرهای محیطی
 load_dotenv()
 
@@ -62,6 +72,7 @@ PROXY_SETTINGS = {
 LIBRARIES = {
     'tensorflow': False,
     'talib': False,
+    'pandas_ta': PANDAS_TA_AVAILABLE,
     'pywt': False,
     'lightgbm': False,
     'xgboost': False,
@@ -74,9 +85,14 @@ LIBRARIES = {
 
 for lib in LIBRARIES:
     try:
-        globals()[lib] = __import__(lib)
-        LIBRARIES[lib] = True
-        logger.info(f"{lib} loaded successfully")
+        if lib == 'pandas_ta':
+            # pandas_ta را قبلاً مدیریت کردیم
+            if PANDAS_TA_AVAILABLE:
+                LIBRARIES[lib] = True
+        else:
+            globals()[lib] = __import__(lib)
+            LIBRARIES[lib] = True
+            logger.info(f"{lib} loaded successfully")
     except ImportError as e:
         logger.warning(f"{lib} not available: {e}")
 
@@ -1601,119 +1617,4 @@ class AdvancedTradingBot:
             # محاسبه اجزای ابر ایچیموکو
             high_9 = data['High'].rolling(window=9).max()
             low_9 = data['Low'].rolling(window=9).min()
-            high_26 = data['High'].rolling(window=26).max()
-            low_26 = data['Low'].rolling(window=26).min()
-            high_52 = data['High'].rolling(window=52).max()
-            low_52 = data['Low'].rolling(window=52).min()
-            
-            # Tenkan-sen (Conversion Line)
-            tenkan_sen = (high_9 + low_9) / 2
-            
-            # Kijun-sen (Base Line)
-            kijun_sen = (high_26 + low_26) / 2
-            
-            # Senkou Span A (Leading Span A)
-            senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
-            
-            # Senkou Span B (Leading Span B)
-            senkou_span_b = ((high_52 + low_52) / 2).shift(26)
-            
-            # Chikou Span (Lagging Span)
-            chikou_span = data['Close'].shift(-26)
-            
-            # ابر ایچیموکو (Kumo)
-            kumo_upper = senkou_span_a.combine(senkou_span_b, max)
-            kumo_lower = senkou_span_a.combine(senkou_span_b, min)
-            
-            return {
-                'tenkan_sen': tenkan_sen.iloc[-1],
-                'kijun_sen': kijun_sen.iloc[-1],
-                'senkou_span_a': senkou_span_a.iloc[-1],
-                'senkou_span_b': senkou_span_b.iloc[-1],
-                'chikou_span': chikou_span.iloc[-1],
-                'kumo_upper': kumo_upper.iloc[-1],
-                'kumo_lower': kumo_lower.iloc[-1],
-                'price_above_kumo': data['Close'][-1] > kumo_upper.iloc[-1],
-                'price_below_kumo': data['Close'][-1] < kumo_lower.iloc[-1]
-            }
-        except Exception as e:
-            logger.error(f"Error in Ichimoku analysis: {e}")
-            return {}
-    
-    def support_resistance_analysis(self, data):
-        """تحلیل سطوح حمایت و مقاومت"""
-        try:
-            if data.empty:
-                return {}
-            
-            # شناسایی سطوح حمایت و مقاومت با استفاده از نقاط چرخش
-            highs = data['High'].rolling(5, center=True).max()
-            lows = data['Low'].rolling(5, center=True).min()
-            
-            # شناسایی نقاط چرخش محلی
-            pivot_highs = []
-            pivot_lows = []
-            
-            for i in range(5, len(data) - 5):
-                if highs[i] == data['High'][i] and highs[i] > highs[i-1] and highs[i] > highs[i+1]:
-                    pivot_highs.append((data.index[i], data['High'][i]))
-                
-                if lows[i] == data['Low'][i] and lows[i] < lows[i-1] and lows[i] < lows[i+1]:
-                    pivot_lows.append((data.index[i], data['Low'][i]))
-            
-            # گروه‌بندی سطوح مشابه
-            resistance_levels = self.group_similar_levels([level[1] for level in pivot_highs])
-            support_levels = self.group_similar_levels([level[1] for level in pivot_lows])
-            
-            return {
-                'resistance': resistance_levels[:5],  # 5 سطح مقاومت برتر
-                'support': support_levels[:5]  # 5 سطح حمایت برتر
-            }
-        except Exception as e:
-            logger.error(f"Error in support resistance analysis: {e}")
-            return {}
-    
-    def group_similar_levels(self, levels, threshold=0.02):
-        """گروه‌بندی سطوح مشابه"""
-        if not levels:
-            return []
-        
-        levels.sort(reverse=True)
-        grouped = []
-        current_group = [levels[0]]
-        
-        for level in levels[1:]:
-            if abs(level - current_group[-1]) / current_group[-1] <= threshold:
-                current_group.append(level)
-            else:
-                grouped.append(sum(current_group) / len(current_group))
-                current_group = [level]
-        
-        if current_group:
-            grouped.append(sum(current_group) / len(current_group))
-        
-        return grouped
-    
-    def trend_lines_analysis(self, data):
-        """تحلیل خطوط روند"""
-        try:
-            if data.empty or len(data) < 20:
-                return {}
-            
-            # شناسایی خطوط روند صعودی
-            uptrend_lines = []
-            for i in range(10, len(data) - 10):
-                # پیدا کردن دو کف پایین‌تر
-                if (data['Low'][i] < data['Low'][i-10:i].min() and 
-                    data['Low'][i] < data['Low'][i+1:i+11].min()):
-                    
-                    # پیدا کردن کف قبلی
-                    for j in range(i-10, 0, -1):
-                        if (data['Low'][j] < data['Low'][j-10:j].min() and 
-                            data['Low'][j] < data['Low'][j+1:j+11].min()):
-                            
-                            # محاسبه خط روند
-                            slope = (data['Low'][i] - data['Low'][j]) / (i - j)
-                            intercept = data['Low'][j] - slope * j
-                            
-                            uptrend_lines.append({
+            high_26 = data['High'].rolling(window
