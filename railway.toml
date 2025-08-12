@@ -1,20 +1,17 @@
-build:
-  builder: dockerfile
-  dockerfilePath: Dockerfile
+[build]
+command = "python main.py"
 
-run:
-  command: python main.py
-  env:
-    - TELEGRAM_BOT_TOKEN
-    - PROXY_URL
-    - PROXY_USERNAME
-    - PROXY_PASSWORD
-    - COINGECKO_API_KEY
-    - NEWS_API_KEY
-    - CRYPTOPANIC_API_KEY
-    - COINMARKETCAP_API_KEY
-    - CRYPTOCOMPARE_API_KEY
-    - BINANCE_API_KEY
-    - COINANALYZE_API_KEY
-    - DATABASE_URL
-    - RAILWAY_ENVIRONMENT=production
+[env]
+TELEGRAM_BOT_TOKEN = ""
+PROXY_URL = ""
+PROXY_USERNAME = ""
+PROXY_PASSWORD = ""
+COINGECKO_API_KEY = ""
+NEWS_API_KEY = ""
+CRYPTOPANIC_API_KEY = ""
+COINMARKETCAP_API_KEY = ""
+CRYPTOCOMPARE_API_KEY = ""
+BINANCE_API_KEY = ""
+COINANALYZE_API_KEY = ""
+DATABASE_URL = ""
+RAILWAY_ENVIRONMENT = "production"
