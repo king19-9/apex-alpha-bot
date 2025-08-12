@@ -2411,7 +2411,17 @@ async def main():
     await application.run_polling()
 
 if __name__ == '__main__':
-    # راه‌حل جایگزین برای مشکل event loop
-    import nest_asyncio
-    nest_asyncio.apply()
-    asyncio.run(main())
+    # راه‌حل ساده برای مشکل event loop
+    import asyncio
+    import threading
+    
+    def run_async(coro):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(coro)
+        loop.close()
+    
+    # اجرای برنامه در یک thread جداگانه
+    thread = threading.Thread(target=run_async, args=(main(),))
+    thread.start()
+    thread.join()
