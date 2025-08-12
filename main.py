@@ -2394,8 +2394,8 @@ class AdvancedTradingBot:
         except Exception as e:
             logger.error(f"Error in prepare_data_for_ml: {e}")
             return [], []
-async def main():
-    """تابع اصلی اجرای ربات"""
+def main_sync():
+    """نسخه همگام (sync) تابع اصلی"""
     # ایجاد نمونه ربات
     bot = AdvancedTradingBot()
     
@@ -2408,20 +2408,7 @@ async def main():
     
     # اجرای ربات
     logger.info("Starting bot...")
-    await application.run_polling()
+    application.run_polling()
 
 if __name__ == '__main__':
-    # راه‌حل ساده برای مشکل event loop
-    import asyncio
-    import threading
-    
-    def run_async(coro):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coro)
-        loop.close()
-    
-    # اجرای برنامه در یک thread جداگانه
-    thread = threading.Thread(target=run_async, args=(main(),))
-    thread.start()
-    thread.join()
+    main_sync()

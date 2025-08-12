@@ -1,8 +1,20 @@
-[build]
-command = "pip install -r requirements.txt"
+build:
+  builder: dockerfile
+  dockerfilePath: Dockerfile
 
-[deploy]
-startCommand = "python main.py"
-
-[env]
-NODE_ENV = "production"
+run:
+  command: python main.py
+  env:
+    - TELEGRAM_BOT_TOKEN
+    - PROXY_URL
+    - PROXY_USERNAME
+    - PROXY_PASSWORD
+    - COINGECKO_API_KEY
+    - NEWS_API_KEY
+    - CRYPTOPANIC_API_KEY
+    - COINMARKETCAP_API_KEY
+    - CRYPTOCOMPARE_API_KEY
+    - BINANCE_API_KEY
+    - COINANALYZE_API_KEY
+    - DATABASE_URL
+    - RAILWAY_ENVIRONMENT=production
