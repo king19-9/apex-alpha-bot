@@ -564,7 +564,17 @@ class AdvancedTradingBot:
                     'volume': price * 1000000,
                     'change': change * 100
                 }
-            }
+            },
+            'news': [
+                {
+                    'title': f'اخبار آزمایشی {symbol}',
+                    'content': f'این یک خبر آزمایشی برای {symbol} در حالت آفلاین است.',
+                    'source': 'Offline Source',
+                    'url': 'https://example.com',
+                    'published_at': datetime.now(),
+                    'symbols': [symbol]
+                }
+            ]
         }
     
     async def fetch_coingecko_data(self, symbol):
@@ -1105,6 +1115,41 @@ class AdvancedTradingBot:
             'sources': ['offline']
         }
     
+    async def get_trading_signals(self):
+        """دریافت سیگنال‌های معاملاتی"""
+        try:
+            symbols = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP']
+            signals = []
+            
+            for symbol in symbols:
+                try:
+                    # انجام تحلیل برای هر نماد
+                    analysis = await self.perform_advanced_analysis(symbol)
+                    
+                    # استخراج سیگنال
+                    signal = {
+                        'symbol': symbol,
+                        'signal': analysis.get('signal', 'HOLD'),
+                        'confidence': analysis.get('confidence', 0.5)
+                    }
+                    
+                    signals.append(signal)
+                    
+                    # رعایت محدودیت درخواست
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Error getting signal for {symbol}: {e}")
+                    signals.append({
+                        'symbol': symbol,
+                        'signal': 'HOLD',
+                        'confidence': 0.5
+                    })
+            
+            return signals
+        except Exception as e:
+            logger.error(f"Error in get_trading_signals: {e}")
+            return []
+    
     async def perform_advanced_analysis(self, symbol):
         """انجام تحلیل پیشرفته با مدیریت خطا"""
         try:
@@ -1282,758 +1327,1088 @@ class AdvancedTradingBot:
     
     def generate_dummy_data(self, symbol):
         """تولید داده‌های ساختگی برای تست"""
-        logger.info(f"Generating dummy data for {symbol}")
-        
-        # قیمت‌های ساختگی بر اساس نماد
-        base_prices = {
-            'BTC': 43000,
-            'ETH': 2200,
-            'BNB': 300,
-            'SOL': 100,
-            'XRP': 0.6,
-            'ADA': 0.5,
-            'DOT': 7,
-            'DOGE': 0.08,
-            'AVAX': 35,
-            'MATIC': 0.8
-        }
-        
-        base_price = base_prices.get(symbol, 100)
-        
-        # ایجاد داده‌های ساختگی
-        dates = pd.date_range(start='2023-01-01', end='2023-12-31')
-        prices = []
-        
-        current_price = base_price
-        for _ in range(len(dates)):
-            change = np.random.uniform(-0.03, 0.03)
-            current_price *= (1 + change)
-            prices.append(current_price)
-        
-        # ایجاد DataFrame
-        data = pd.DataFrame({
-            'Open': prices,
-            'High': [p * np.random.uniform(1.0, 1.03) for p in prices],
-            'Low': [p * np.random.uniform(0.97, 1.0) for p in prices],
-            'Close': prices,
-            'Volume': [np.random.randint(1000000, 5000000) for _ in prices]
-        }, index=dates)
-        
-        return data
+        try:
+            # قیمت‌های پایه برای ارزهای مختلف
+            base_prices = {
+                'BTC': 43000,
+                'ETH': 2200,
+                'BNB': 300,
+                'SOL': 100,
+                'XRP': 0.6,
+                'ADA': 0.5,
+                'DOT': 7,
+                'DOGE': 0.08,
+                'AVAX': 35,
+                'MATIC': 0.8
+            }
+            
+            base_price = base_prices.get(symbol, 100)
+            
+            # تولید داده‌های ساختگی
+            dates = pd.date_range(start='2023-01-01', end='2023-12-31')
+            
+            # تولید قیمت‌های تصادفی با روند کلی
+            np.random.seed(42)
+            price_changes = np.random.normal(0, 0.02, len(dates))
+            
+            # ایجاد یک روند کلی
+            trend = np.linspace(0, 0.5, len(dates))
+            price_changes += trend
+            
+            # محاسبه قیمت‌ها
+            prices = [base_price]
+            for change in price_changes:
+                prices.append(prices[-1] * (1 + change))
+            
+            prices = prices[1:]  # حذف قیمت اولیه
+            
+            # ایجاد داده‌های OHLCV
+            data = pd.DataFrame({
+                'Open': prices,
+                'High': [p * (1 + abs(np.random.normal(0, 0.01))) for p in prices],
+                'Low': [p * (1 - abs(np.random.normal(0, 0.01))) for p in prices],
+                'Close': prices,
+                'Volume': [base_price * 1000000 * (0.5 + np.random.random()) for _ in prices]
+            }, index=dates)
+            
+            return data
+        except Exception as e:
+            logger.error(f"Error generating dummy data: {e}")
+            return pd.DataFrame()
     
     def advanced_technical_analysis(self, data):
         """تحلیل تکنیکال پیشرفته"""
-        if data.empty:
-            return {}
-        
         try:
-            # محاسبه شاخص‌های تکنیکال
-            close = data['Close']
-            high = data['High']
-            low = data['Low']
+            if data.empty:
+                return {}
+            
+            # محاسبه شاخص‌های تکنیکال با استفاده از TA-Lib
+            close_prices = data['Close'].values
             
             # RSI
-            rsi = talib.RSI(close, timeperiod=14)
+            rsi = talib.RSI(close_prices, timeperiod=14)
+            rsi_value = rsi[-1] if not np.isnan(rsi[-1]) else 50
             
             # MACD
-            macd, macd_signal, macd_hist = talib.MACD(close)
+            macd, macdsignal, macdhist = talib.MACD(close_prices, fastperiod=12, slowperiod=26, signalperiod=9)
+            macd_value = macd[-1] if not np.isnan(macd[-1]) else 0
+            macd_signal = macdsignal[-1] if not np.isnan(macdsignal[-1]) else 0
+            
+            # SMA
+            sma20 = talib.SMA(close_prices, timeperiod=20)
+            sma50 = talib.SMA(close_prices, timeperiod=50)
+            sma20_value = sma20[-1] if not np.isnan(sma20[-1]) else 0
+            sma50_value = sma50[-1] if not np.isnan(sma50[-1]) else 0
             
             # Bollinger Bands
-            bb_upper, bb_middle, bb_lower = talib.BBANDS(close)
-            
-            # Stochastic
-            slowk, slowd = talib.STOCH(high, low, close)
-            
-            # Williams %R
-            williams_r = talib.WILLR(high, low, close)
-            
-            # Commodity Channel Index
-            cci = talib.CCI(high, low, close)
-            
-            # Average Directional Index
-            adx = talib.ADX(high, low, close)
-            
-            # تحلیل روند
-            sma_20 = talib.SMA(close, timeperiod=20)
-            sma_50 = talib.SMA(close, timeperiod=50)
-            
-            trend_direction = 'صعودی' if sma_20.iloc[-1] > sma_50.iloc[-1] else 'نزولی'
+            upper, middle, lower = talib.BBANDS(close_prices, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+            upper_value = upper[-1] if not np.isnan(upper[-1]) else 0
+            middle_value = middle[-1] if not np.isnan(middle[-1]) else 0
+            lower_value = lower[-1] if not np.isnan(lower[-1]) else 0
             
             return {
-                'classical': {
-                    'rsi': {'14': rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50},
-                    'macd': {
-                        'macd': macd.iloc[-1] if not pd.isna(macd.iloc[-1]) else 0,
-                        'signal': macd_signal.iloc[-1] if not pd.isna(macd_signal.iloc[-1]) else 0,
-                        'histogram': macd_hist.iloc[-1] if not pd.isna(macd_hist.iloc[-1]) else 0
-                    },
-                    'bollinger': {
-                        'upper': bb_upper.iloc[-1] if not pd.isna(bb_upper.iloc[-1]) else 0,
-                        'middle': bb_middle.iloc[-1] if not pd.isna(bb_middle.iloc[-1]) else 0,
-                        'lower': bb_lower.iloc[-1] if not pd.isna(bb_lower.iloc[-1]) else 0
-                    },
-                    'stochastic': {
-                        'slowk': slowk.iloc[-1] if not pd.isna(slowk.iloc[-1]) else 50,
-                        'slowd': slowd.iloc[-1] if not pd.isna(slowd.iloc[-1]) else 50
-                    },
-                    'williams_r': williams_r.iloc[-1] if not pd.isna(williams_r.iloc[-1]) else -50,
-                    'cci': cci.iloc[-1] if not pd.isna(cci.iloc[-1]) else 0,
-                    'adx': adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 25,
-                    'trend': {
-                        'direction': trend_direction,
-                        'sma_20': sma_20.iloc[-1] if not pd.isna(sma_20.iloc[-1]) else 0,
-                        'sma_50': sma_50.iloc[-1] if not pd.isna(sma_50.iloc[-1]) else 0
-                    }
+                'rsi': rsi_value,
+                'macd': {
+                    'macd': macd_value,
+                    'signal': macd_signal,
+                    'histogram': macdhist[-1] if not np.isnan(macdhist[-1]) else 0
+                },
+                'sma': {
+                    'sma20': sma20_value,
+                    'sma50': sma50_value
+                },
+                'bollinger': {
+                    'upper': upper_value,
+                    'middle': middle_value,
+                    'lower': lower_value
                 }
             }
         except Exception as e:
-            logger.error(f"Error in technical analysis: {e}")
+            logger.error(f"Error in advanced_technical_analysis: {e}")
             return {}
     
-    def ichimoku_analysis(self, data):
-        """تحلیل ابر ایچیموکو"""
-        if data.empty:
-            return {}
-        
+    def calculate_signal_score(self, analysis):
+        """محاسبه امتیاز سیگنال نهایی"""
         try:
-            high = data['High']
-            low = data['Low']
-            close = data['Close']
+            score = 0.5  # امتیاز پیش‌فرض
             
-            # محاسبه خطوط ایچیموکو
-            tenkan_sen = (high.rolling(window=9).max() + low.rolling(window=9).min()) / 2
-            kijun_sen = (high.rolling(window=26).max() + low.rolling(window=26).min()) / 2
-            senkou_span_a = ((tenkan_sen + kijun_sen) / 2).shift(26)
-            senkou_span_b = ((high.rolling(window=52).max() + low.rolling(window=52).min()) / 2).shift(26)
-            chikou_span = close.shift(-26)
-            
-            # مقادیر فعلی
-            current_tenkan = tenkan_sen.iloc[-1] if not pd.isna(tenkan_sen.iloc[-1]) else 0
-            current_kijun = kijun_sen.iloc[-1] if not pd.isna(kijun_sen.iloc[-1]) else 0
-            current_senkou_a = senkou_span_a.iloc[-1] if not pd.isna(senkou_span_a.iloc[-1]) else 0
-            current_senkou_b = senkou_span_b.iloc[-1] if not pd.isna(senkou_span_b.iloc[-1]) else 0
-            current_chikou = chikou_span.iloc[-1] if not pd.isna(chikou_span.iloc[-1]) else 0
-            current_close = close.iloc[-1]
-            
-            # بررسی موقعیت قیمت نسبت به ابر
-            price_above_kumo = current_close > max(current_senkou_a, current_senkou_b)
-            
-            return {
-                'tenkan_sen': current_tenkan,
-                'kijun_sen': current_kijun,
-                'senkou_span_a': current_senkou_a,
-                'senkou_span_b': current_senkou_b,
-                'chikou_span': current_chikou,
-                'price_above_kumo': price_above_kumo
+            # وزن‌ها برای هر تحلیل
+            weights = {
+                'technical': 0.3,
+                'sentiment': 0.2,
+                'economic_sentiment': 0.1,
+                'elliott': 0.1,
+                'market_structure': 0.1,
+                'ai_analysis': 0.2
             }
+            
+            # تحلیل تکنیکال
+            technical = analysis.get('technical', {})
+            if technical:
+                rsi = technical.get('rsi', 50)
+                if rsi < 30:  # اشباع فروش
+                    score += weights['technical'] * 0.3
+                elif rsi > 70:  # اشباع خرید
+                    score -= weights['technical'] * 0.3
+                
+                # MACD
+                macd = technical.get('macd', {})
+                if macd:
+                    macd_value = macd.get('macd', 0)
+                    macd_signal = macd.get('signal', 0)
+                    if macd_value > macd_signal:  # سیگنال خرید
+                        score += weights['technical'] * 0.2
+                    elif macd_value < macd_signal:  # سیگنال فروش
+                        score -= weights['technical'] * 0.2
+            
+            # تحلیل احساسات
+            sentiment = analysis.get('sentiment', {})
+            if sentiment:
+                avg_sentiment = sentiment.get('average_sentiment', 0)
+                score += weights['sentiment'] * avg_sentiment
+            
+            # تحلیل احساسات اقتصادی
+            economic_sentiment = analysis.get('economic_sentiment', {})
+            if economic_sentiment:
+                avg_economic_sentiment = economic_sentiment.get('average_sentiment', 0)
+                score += weights['economic_sentiment'] * avg_economic_sentiment
+            
+            # تحلیل امواج الیوت
+            elliott = analysis.get('elliott', {})
+            if elliott:
+                current_wave = elliott.get('current_wave', '')
+                if 'صعودی' in current_wave:
+                    score += weights['elliott'] * 0.5
+                elif 'نزولی' in current_wave:
+                    score -= weights['elliott'] * 0.5
+            
+            # تحلیل ساختار بازار
+            market_structure = analysis.get('market_structure', {})
+            if market_structure:
+                trend = market_structure.get('trend', '')
+                if trend == 'صعودی':
+                    score += weights['market_structure'] * 0.5
+                elif trend == 'نزولی':
+                    score -= weights['market_structure'] * 0.5
+            
+            # تحلیل هوش مصنوعی
+            ai_analysis = analysis.get('ai_analysis', {})
+            if ai_analysis:
+                predicted_trend = ai_analysis.get('predicted_trend', '')
+                if predicted_trend == 'صعودی':
+                    score += weights['ai_analysis'] * 0.5
+                elif predicted_trend == 'نزولی':
+                    score -= weights['ai_analysis'] * 0.5
+            
+            # نرمال‌سازی امتیاز بین 0 و 1
+            score = max(0, min(1, score))
+            
+            return score
         except Exception as e:
-            logger.error(f"Error in Ichimoku analysis: {e}")
-            return {}
+            logger.error(f"Error in calculate_signal_score: {e}")
+            return 0.5
+    
+    def advanced_supply_demand(self, symbol):
+        """تحلیل عرضه و تقاضا پیشرفته"""
+        try:
+            # دریافت داده‌های تاریخی
+            historical_data = self.get_historical_data(symbol)
+            
+            if historical_data.empty:
+                return {'imbalance': 0}
+            
+            close_prices = historical_data['Close'].values
+            volume = historical_data['Volume'].values
+            
+            # تحلیل مناطق عرضه و تقاضا
+            # در یک پیاده‌سازی واقعی، این تحلیل بسیار پیچیده‌تر خواهد بود
+            
+            # محاسبه میانگین حجم
+            avg_volume = np.mean(volume)
+            
+            # پیدا کردن مناطق با حجم بالا (احتمالاً مناطق عرضه و تقاضا)
+            high_volume_indices = np.where(volume > avg_volume * 1.5)[0]
+            
+            if len(high_volume_indices) > 0:
+                # تحلیل مناطق عرضه و تقاضا
+                demand_zones = []
+                supply_zones = []
+                
+                for idx in high_volume_indices:
+                    # اگر قیمت بعد از این ناحیه افزایش یافته، این یک ناحیه تقاضا است
+                    if idx < len(close_prices) - 5 and np.mean(close_prices[idx+1:idx+6]) > close_prices[idx]:
+                        demand_zones.append(close_prices[idx])
+                    # اگر قیمت بعد از این ناحیه کاهش یافته، این یک ناحیه عرضه است
+                    elif idx < len(close_prices) - 5 and np.mean(close_prices[idx+1:idx+6]) < close_prices[idx]:
+                        supply_zones.append(close_prices[idx])
+                
+                # محاسبه عدم تعادل عرضه و تقاضا
+                if len(demand_zones) > 0 and len(supply_zones) > 0:
+                    avg_demand = np.mean(demand_zones)
+                    avg_supply = np.mean(supply_zones)
+                    imbalance = (avg_demand - avg_supply) / ((avg_demand + avg_supply) / 2)
+                else:
+                    imbalance = 0
+                
+                return {
+                    'imbalance': imbalance,
+                    'demand_zones': demand_zones[:3] if demand_zones else [],
+                    'supply_zones': supply_zones[:3] if supply_zones else []
+                }
+            
+            return {'imbalance': 0}
+        except Exception as e:
+            logger.error(f"Error in advanced_supply_demand: {e}")
+            return {'imbalance': 0}
     
     def wyckoff_analysis(self, data):
-        """تحلیل ویچاف"""
-        if data.empty:
-            return {}
-        
+        """تحلیل ویکاف"""
         try:
-            close = data['Close']
-            volume = data['Volume']
+            if data.empty:
+                return {}
             
-            # تحلیل ساده ویچاف
-            recent_close = close.iloc[-1]
-            avg_volume = volume.rolling(window=20).mean().iloc[-1]
-            current_volume = volume.iloc[-1]
+            # تحلیل ساده ویکاف
+            close_prices = data['Close'].values
+            volume = data['Volume'].values
             
-            # شناسایی فازها
-            accumulation_phase = current_volume > avg_volume * 1.2 and recent_close > close.iloc[-5]
-            distribution_phase = current_volume > avg_volume * 1.2 and recent_close < close.iloc[-5]
+            # محاسبه تغییرات قیمت
+            price_changes = np.diff(close_prices)
+            
+            # محاسبه میانگین حجم
+            avg_volume = np.mean(volume)
+            
+            # تحلیل فاز ویکاف
+            if len(price_changes) > 0:
+                if np.mean(price_changes[-5:]) > 0 and volume[-1] > avg_volume:
+                    phase = "تراکم (Accumulation)"
+                elif np.mean(price_changes[-5:]) < 0 and volume[-1] > avg_volume:
+                    phase = "توزیع (Distribution)"
+                elif np.mean(price_changes[-10:]) > 0:
+                    phase = "صعود (Markup)"
+                elif np.mean(price_changes[-10:]) < 0:
+                    phase = "نزول (Markdown)"
+                else:
+                    phase = "خنثی (Ranging)"
+            else:
+                phase = "ناشناخته"
             
             return {
-                'phase': 'انباشت' if accumulation_phase else 'توزیع' if distribution_phase else 'خنثی',
-                'accumulation_phase': accumulation_phase,
-                'distribution_phase': distribution_phase,
-                'volume_ratio': current_volume / avg_volume if avg_volume > 0 else 1
+                'phase': phase
             }
         except Exception as e:
-            logger.error(f"Error in Wyckoff analysis: {e}")
+            logger.error(f"Error in wyckoff_analysis: {e}")
             return {}
     
     def volume_profile_analysis(self, data):
-        """تحلیل پروفایل حجمی"""
-        if data.empty:
-            return {}
-        
+        """تحلیل پروفایل حجم"""
         try:
-            close = data['Close']
-            volume = data['Volume']
+            if data.empty:
+                return {}
             
-            # محاسبه پروفایل حجمی ساده
-            price_levels = np.linspace(close.min(), close.max(), 20)
-            volume_profile = {}
+            # محاسبه پروفایل حجم ساده
+            close_prices = data['Close'].values
+            volume = data['Volume'].values
+            
+            # محاسبه ناحیه ارزش
+            price_levels = np.linspace(np.min(close_prices), np.max(close_prices), 10)
+            volume_profile = []
             
             for i in range(len(price_levels) - 1):
                 lower = price_levels[i]
                 upper = price_levels[i + 1]
-                mask = (close >= lower) & (close < upper)
-                total_volume = volume[mask].sum()
-                volume_profile[float(f"{(lower + upper) / 2:.2f}")] = total_volume
-            
-            # پیدا کردن POC (Point of Control)
-            poc_price = max(volume_profile, key=volume_profile.get) if volume_profile else close.iloc[-1]
-            
-            # محاسبه محدوده ارزش (Value Area)
-            total_volume = sum(volume_profile.values())
-            if total_volume > 0:
-                cumulative_volume = 0
-                value_area_low = None
-                value_area_high = None
                 
-                for price in sorted(volume_profile.keys()):
-                    cumulative_volume += volume_profile[price]
-                    if cumulative_volume >= total_volume * 0.3 and value_area_low is None:
-                        value_area_low = price
-                    if cumulative_volume >= total_volume * 0.7:
-                        value_area_high = price
-                        break
+                # محاسبه حجم در این محدوده قیمتی
+                mask = (close_prices >= lower) & (close_prices < upper)
+                level_volume = np.sum(volume[mask])
+                
+                volume_profile.append({
+                    'lower': lower,
+                    'upper': upper,
+                    'volume': level_volume
+                })
+            
+            # پیدا کردن ناحیه با بیشترین حجم (ناحیه ارزش)
+            if volume_profile:
+                value_area = max(volume_profile, key=lambda x: x['volume'])
+                value_area_str = f"{value_area['lower']:.2f} - {value_area['upper']:.2f}"
             else:
-                value_area_low = close.min()
-                value_area_high = close.max()
+                value_area_str = "ناشناخته"
             
             return {
-                'poc': {'price_level': poc_price},
-                'value_area_low': value_area_low,
-                'value_area_high': value_area_high,
-                'volume_profile': volume_profile
+                'value_area': value_area_str
             }
         except Exception as e:
-            logger.error(f"Error in volume profile analysis: {e}")
+            logger.error(f"Error in volume_profile_analysis: {e}")
             return {}
     
     def fibonacci_analysis(self, data):
         """تحلیل فیبوناچی"""
-        if data.empty:
-            return {}
-        
         try:
-            high = data['High'].max()
-            low = data['Low'].min()
+            if data.empty:
+                return {}
+            
+            # پیدا کردن سقف و کف در بازه زمانی
+            high = np.max(data['High'].values)
+            low = np.min(data['Low'].values)
             
             # محاسبه سطوح فیبوناچی
             diff = high - low
             levels = {
-                '0%': low,
-                '23.6%': low + diff * 0.236,
-                '38.2%': low + diff * 0.382,
-                '50%': low + diff * 0.5,
-                '61.8%': low + diff * 0.618,
-                '78.6%': low + diff * 0.786,
-                '100%': high
+                '0%': high,
+                '23.6%': high - 0.236 * diff,
+                '38.2%': high - 0.382 * diff,
+                '50%': high - 0.5 * diff,
+                '61.8%': high - 0.618 * diff,
+                '78.6%': high - 0.786 * diff,
+                '100%': low
             }
             
-            current_price = data['Close'].iloc[-1]
-            
-            # بررسی موقعیت فعلی قیمت
-            nearest_level = None
-            min_distance = float('inf')
-            
-            for level, price in levels.items():
-                distance = abs(current_price - price)
-                if distance < min_distance:
-                    min_distance = distance
-                    nearest_level = level
+            # تبدیل به رشته برای نمایش
+            levels_str = ", ".join([f"{key}: {value:.2f}" for key, value in levels.items()])
             
             return {
-                'levels': levels,
-                'current_price': current_price,
-                'nearest_level': nearest_level,
-                'high': high,
-                'low': low
+                'levels': levels_str
             }
         except Exception as e:
-            logger.error(f"Error in Fibonacci analysis: {e}")
+            logger.error(f"Error in fibonacci_analysis: {e}")
             return {}
     
     def harmonic_patterns_analysis(self, data):
         """تحلیل الگوهای هارمونیک"""
-        if data.empty:
-            return {}
-        
         try:
-            high = data['High']
-            low = data['Low']
-            close = data['Close']
+            if data.empty:
+                return {}
             
-            # پیدا کردن نقاط چرخش (پیک و دره)
-            peaks, _ = find_peaks(high.values, distance=5)
-            troughs, _ = find_peaks(-low.values, distance=5)
+            # تحلیل ساده الگوهای هارمونیک
+            # در یک پیاده‌سازی واقعی، این تحلیل بسیار پیچیده‌تر خواهد بود
             
-            # ترکیب نقاط
-            pivot_points = sorted(list(peaks) + list(troughs))
+            # پیدا کردن نقاط چرخش محلی
+            highs = data['High'].values
+            lows = data['Low'].values
             
-            patterns_found = []
+            # پیدا کردن قله‌ها و دره‌ها
+            peaks, _ = find_peaks(highs, distance=5)
+            troughs, _ = find_peaks(-lows, distance=5)
             
-            # بررسی الگوهای هارمونیک
-            for pattern_name, ratios in self.harmonic_patterns.items():
-                if len(pivot_points) >= 4:
-                    # محاسبه نسبت‌ها
-                    XA = high.iloc[pivot_points[0]] - low.iloc[pivot_points[1]]
-                    AB = high.iloc[pivot_points[1]] - low.iloc[pivot_points[2]]
-                    BC = high.iloc[pivot_points[2]] - low.iloc[pivot_points[3]]
-                    
-                    # بررسی نسبت‌ها
-                    ab_ratio = AB / XA if XA != 0 else 0
-                    bc_ratio = BC / AB if AB != 0 else 0
-                    
-                    # بررسی تطابق با الگو
-                    if (abs(ab_ratio - ratios['AB']) < 0.1 and 
-                        abs(bc_ratio - ratios['BC']) < 0.1):
-                        patterns_found.append({
-                            'pattern': pattern_name,
-                            'type': 'صعودی' if XA > 0 else 'نزولی',
-                            'confidence': 1 - (abs(ab_ratio - ratios['AB']) + abs(bc_ratio - ratios['BC'])) / 2
-                        })
+            # اگر تعداد نقاط کافی باشد، تحلیل را انجام دهید
+            if len(peaks) >= 3 and len(troughs) >= 3:
+                pattern = "gartley"  # به عنوان نمونه
+            else:
+                pattern = "ناشناخته"
             
             return {
-                'pattern_count': len(patterns_found),
-                'patterns_found': patterns_found
+                'pattern': pattern
             }
         except Exception as e:
-            logger.error(f"Error in harmonic patterns analysis: {e}")
+            logger.error(f"Error in harmonic_patterns_analysis: {e}")
+            return {}
+    
+    def ichimoku_analysis(self, data):
+        """تحلیل ایچیموکو"""
+        try:
+            if data.empty:
+                return {}
+            
+            # محاسبه اجزای ایچیموکو
+            high_prices = data['High'].values
+            low_prices = data['Low'].values
+            close_prices = data['Close'].values
+            
+            # Tenkan-sen (خط تبدیل)
+            period9_high = np.maximum.accumulate(high_prices)
+            period9_low = np.minimum.accumulate(low_prices)
+            tenkan_sen = (period9_high + period9_low) / 2
+            
+            # Kijun-sen (خط پایه)
+            period26_high = np.maximum.accumulate(high_prices)
+            period26_low = np.minimum.accumulate(low_prices)
+            kijun_sen = (period26_high + period26_low) / 2
+            
+            # Senkou Span A (ابر پیشرو A)
+            senkou_span_a = (tenkan_sen + kijun_sen) / 2
+            
+            # Senkou Span B (ابر پیشرو B)
+            period52_high = np.maximum.accumulate(high_prices)
+            period52_low = np.minimum.accumulate(low_prices)
+            senkou_span_b = (period52_high + period52_low) / 2
+            
+            # Chikou Span (خط تاخیر)
+            chikou_span = np.roll(close_prices, -26)
+            
+            # تحلیل سیگنال
+            current_tenkan = tenkan_sen[-1] if not np.isnan(tenkan_sen[-1]) else 0
+            current_kijun = kijun_sen[-1] if not np.isnan(kijun_sen[-1]) else 0
+            current_close = close_prices[-1]
+            
+            if current_tenkan > current_kijun and current_close > senkou_span_a[-1]:
+                signal = "صعودی"
+            elif current_tenkan < current_kijun and current_close < senkou_span_a[-1]:
+                signal = "نزولی"
+            else:
+                signal = "خنثی"
+            
+            return {
+                'signal': signal
+            }
+        except Exception as e:
+            logger.error(f"Error in ichimoku_analysis: {e}")
             return {}
     
     def support_resistance_analysis(self, data):
-        """تحلیل حمایت و مقاومت"""
-        if data.empty:
-            return {}
-        
+        """تحلیل سطوح حمایت و مقاومت"""
         try:
-            high = data['High']
-            low = data['Low']
+            if data.empty:
+                return {}
             
             # پیدا کردن سطوح حمایت و مقاومت
-            peaks, _ = find_peaks(high.values, distance=5)
-            troughs, _ = find_peaks(-low.values, distance=5)
+            highs = data['High'].values
+            lows = data['Low'].values
             
-            # محاسبه سطوح
-            resistance_levels = [high.iloc[i] for i in peaks]
-            support_levels = [low.iloc[i] for i in troughs]
+            # پیدا کردن قله‌ها و دره‌ها
+            peaks, _ = find_peaks(highs, distance=5)
+            troughs, _ = find_peaks(-lows, distance=5)
             
-            # فیلتر کردن سطوح نزدیک به هم
-            resistance_levels = self.filter_levels(resistance_levels)
-            support_levels = self.filter_levels(support_levels)
+            # محاسبه سطوح حمایت و مقاومت
+            if len(peaks) > 0:
+                resistance_levels = highs[peaks]
+                resistance = np.mean(resistance_levels[-3:]) if len(resistance_levels) >= 3 else np.mean(resistance_levels)
+            else:
+                resistance = 0
             
-            current_price = data['Close'].iloc[-1]
+            if len(troughs) > 0:
+                support_levels = lows[troughs]
+                support = np.mean(support_levels[-3:]) if len(support_levels) >= 3 else np.mean(support_levels)
+            else:
+                support = 0
             
             return {
-                'resistance': resistance_levels,
-                'support': support_levels,
-                'current_price': current_price,
-                'nearest_resistance': min([r for r in resistance_levels if r > current_price], default=None),
-                'nearest_support': max([s for s in support_levels if s < current_price], default=None)
+                'support': support,
+                'resistance': resistance
             }
         except Exception as e:
-            logger.error(f"Error in support resistance analysis: {e}")
+            logger.error(f"Error in support_resistance_analysis: {e}")
             return {}
-    
-    def filter_levels(self, levels, threshold=0.02):
-        """فیلتر کردن سطوح نزدیک به هم"""
-        if not levels:
-            return []
-        
-        filtered = []
-        levels_sorted = sorted(levels)
-        
-        for level in levels_sorted:
-            if not filtered or abs(level - filtered[-1]) / filtered[-1] > threshold:
-                filtered.append(level)
-        
-        return filtered
     
     def trend_lines_analysis(self, data):
         """تحلیل خطوط روند"""
-        if data.empty:
-            return {}
-        
         try:
-            close = data['Close']
+            if data.empty:
+                return {}
             
-            # محاسبه شیب خط روند
-            x = np.arange(len(close))
-            y = close.values
+            # تحلیل خط روند ساده
+            close_prices = data['Close'].values
             
-            # رگرسیون خطی برای پیدا کردن شیب
-            slope, intercept = np.polyfit(x, y, 1)
+            # محاسبه شیب خط روند با استفاده از رگرسیون خطی
+            x = np.arange(len(close_prices))
+            slope, intercept = np.polyfit(x, close_prices, 1)
             
-            # تعیین نوع روند
-            trend_type = 'صعودی' if slope > 0 else 'نزولی'
-            
-            # محاسبه قدرت روند
-            trend_strength = abs(slope) / close.mean() * 100 if close.mean() > 0 else 0
+            # تعیین جهت روند
+            if slope > 0:
+                trend = "صعودی"
+            elif slope < 0:
+                trend = "نزولی"
+            else:
+                trend = "خنثی"
             
             return {
-                'trend_type': trend_type,
+                'trend': trend,
                 'slope': slope,
-                'intercept': intercept,
-                'strength': trend_strength,
-                'r_squared': np.corrcoef(x, y)[0, 1]**2
+                'intercept': intercept
             }
         except Exception as e:
-            logger.error(f"Error in trend lines analysis: {e}")
+            logger.error(f"Error in trend_lines_analysis: {e}")
             return {}
     
     def order_flow_analysis(self, data):
         """تحلیل جریان سفارش"""
-        if data.empty:
-            return {}
-        
         try:
-            close = data['Close']
-            volume = data['Volume']
+            if data.empty:
+                return {}
             
-            # محاسبه حجم خرید و فروش (تخمینی)
-            price_change = close.diff()
-            buy_volume = volume[price_change > 0].sum()
-            sell_volume = volume[price_change < 0].sum()
+            # تحلیل جریان سفارش ساده
+            close_prices = data['Close'].values
+            volume = data['Volume'].values
             
-            # محاسبه نسبت خرید به فروش
-            buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else float('inf')
+            # محاسبه تغییرات قیمت و حجم
+            price_changes = np.diff(close_prices)
+            volume_changes = np.diff(volume)
+            
+            # تحلیل جریان سفارش
+            if len(price_changes) > 0 and len(volume_changes) > 0:
+                # اگر قیمت و حجم هر دو افزایش یابند، جریان سفارش مثبت است
+                if np.mean(price_changes[-5:]) > 0 and np.mean(volume_changes[-5:]) > 0:
+                    flow = "مثبت (خرید)"
+                # اگر قیمت کاهش و حجم افزایش یابد، جریان سفارش منفی است
+                elif np.mean(price_changes[-5:]) < 0 and np.mean(volume_changes[-5:]) > 0:
+                    flow = "منفی (فروش)"
+                else:
+                    flow = "خنثی"
+            else:
+                flow = "ناشناخته"
             
             return {
-                'buy_volume': buy_volume,
-                'sell_volume': sell_volume,
-                'buy_sell_ratio': buy_sell_ratio,
-                'net_volume': buy_volume - sell_volume,
-                'volume_pressure': 'خرید' if buy_volume > sell_volume else 'فروش'
+                'flow': flow
             }
         except Exception as e:
-            logger.error(f"Error in order flow analysis: {e}")
+            logger.error(f"Error in order_flow_analysis: {e}")
             return {}
     
     def vwap_analysis(self, data):
-        """تحلیل VWAP"""
-        if data.empty:
-            return {}
-        
+        """تحلیل میانگین وزنی حجم (VWAP)"""
         try:
-            high = data['High']
-            low = data['Low']
-            close = data['Close']
-            volume = data['Volume']
+            if data.empty:
+                return {}
             
             # محاسبه VWAP
-            typical_price = (high + low + close) / 3
-            vwap = (typical_price * volume).cumsum() / volume.cumsum()
+            typical_prices = (data['High'].values + data['Low'].values + data['Close'].values) / 3
+            volume = data['Volume'].values
             
-            current_vwap = vwap.iloc[-1] if not pd.isna(vwap.iloc[-1]) else close.iloc[-1]
-            current_price = close.iloc[-1]
+            # محاسبه VWAP
+            vwap = np.cumsum(typical_prices * volume) / np.cumsum(volume)
+            current_vwap = vwap[-1] if not np.isnan(vwap[-1]) else 0
+            current_close = data['Close'].values[-1]
+            
+            # تحلیل سیگنال
+            if current_close > current_vwap:
+                signal = "صعودی"
+            elif current_close < current_vwap:
+                signal = "نزولی"
+            else:
+                signal = "خنثی"
             
             return {
                 'vwap': current_vwap,
-                'current_price': current_price,
-                'price_above_vwap': current_price > current_vwap,
-                'deviation': (current_price - current_vwap) / current_vwap * 100 if current_vwap > 0 else 0
+                'signal': signal
             }
         except Exception as e:
-            logger.error(f"Error in VWAP analysis: {e}")
+            logger.error(f"Error in vwap_analysis: {e}")
             return {}
     
     def pivot_points_analysis(self, data):
-        """تحلیل پیوت پوینت‌ها"""
-        if data.empty:
-            return {}
-        
+        """تحلیل نقاط محوری"""
         try:
-            high = data['High']
-            low = data['Low']
-            close = data['Close']
+            if data.empty:
+                return {}
             
-            # محاسبه پیوت پوینت استاندارد
-            pivot = (high.iloc[-1] + low.iloc[-1] + close.iloc[-1]) / 3
+            # محاسبه نقاط محوری
+            high = np.max(data['High'].values)
+            low = np.min(data['Low'].values)
+            close = data['Close'].values[-1]
+            
+            # محاسبه نقطه محوری اصلی
+            pivot = (high + low + close) / 3
             
             # محاسبه سطوح حمایت و مقاومت
-            r1 = 2 * pivot - low.iloc[-1]
-            s1 = 2 * pivot - high.iloc[-1]
-            r2 = pivot + (high.iloc[-1] - low.iloc[-1])
-            s2 = pivot - (high.iloc[-1] - low.iloc[-1])
-            r3 = high.iloc[-1] + 2 * (pivot - low.iloc[-1])
-            s3 = low.iloc[-1] - 2 * (high.iloc[-1] - pivot)
-            
-            current_price = close.iloc[-1]
+            resistance1 = (2 * pivot) - low
+            support1 = (2 * pivot) - high
+            resistance2 = pivot + (high - low)
+            support2 = pivot - (high - low)
+            resistance3 = high + 2 * (pivot - low)
+            support3 = low - 2 * (high - pivot)
             
             return {
                 'pivot': pivot,
-                'resistance': {'r1': r1, 'r2': r2, 'r3': r3},
-                'support': {'s1': s1, 's2': s2, 's3': s3},
-                'current_price': current_price,
-                'position': 'بالا' if current_price > pivot else 'پایین'
+                'resistance1': resistance1,
+                'support1': support1,
+                'resistance2': resistance2,
+                'support2': support2,
+                'resistance3': resistance3,
+                'support3': support3
             }
         except Exception as e:
-            logger.error(f"Error in pivot points analysis: {e}")
+            logger.error(f"Error in pivot_points_analysis: {e}")
             return {}
     
     def advanced_candlestick_patterns(self, data):
         """تحلیل الگوهای شمعی پیشرفته"""
-        if data.empty:
-            return {}
-        
         try:
-            open_price = data['Open'].values
-            high = data['High'].values
-            low = data['Low'].values
-            close = data['Close'].values
+            if data.empty:
+                return {}
             
-            patterns_found = []
+            # استخراج داده‌های شمعی
+            open_prices = data['Open'].values
+            high_prices = data['High'].values
+            low_prices = data['Low'].values
+            close_prices = data['Close'].values
             
-            # بررسی الگوهای شمعی پیشرفته
-            for pattern_name, description in self.advanced_candlesticks.items():
-                pattern_func = getattr(talib, f'CDL{pattern_name.upper()}', None)
-                if pattern_func:
-                    pattern_result = pattern_func(open_price, high, low, close)
-                    if pattern_result[-1] != 0:
-                        patterns_found.append({
-                            'pattern': pattern_name,
-                            'description': description,
-                            'strength': abs(pattern_result[-1]) / 100
-                        })
+            # تشخیص الگوهای شمعی پیشرفته
+            patterns = {}
             
-            return {
-                'patterns_count': len(patterns_found),
-                'patterns_found': patterns_found
-            }
+            # الگوی سه سرباز سفید
+            if len(close_prices) >= 3:
+                if (close_prices[-1] > close_prices[-2] > close_prices[-3] and
+                    open_prices[-1] < close_prices[-1] and
+                    open_prices[-2] < close_prices[-2] and
+                    open_prices[-3] < close_prices[-3]):
+                    patterns['three_white_soldiers'] = self.advanced_candlesticks['three_white_soldiers']
+            
+            # الگوی سه کلاغ سیاه
+            if len(close_prices) >= 3:
+                if (close_prices[-1] < close_prices[-2] < close_prices[-3] and
+                    open_prices[-1] > close_prices[-1] and
+                    open_prices[-2] > close_prices[-2] and
+                    open_prices[-3] > close_prices[-3]):
+                    patterns['three_black_crows'] = self.advanced_candlesticks['three_black_crows']
+            
+            # الگوی ستاره صبحگاهی
+            if len(close_prices) >= 3:
+                if (close_prices[-3] > open_prices[-3] and  # شمع اول نزولی
+                    close_prices[-2] < open_prices[-2] and  # شمع دوم دوجی یا کوچک
+                    abs(close_prices[-2] - open_prices[-2]) < abs(close_prices[-3] - open_prices[-3]) and
+                    close_prices[-1] > open_prices[-1] and  # شمع سوم صعودی
+                    close_prices[-1] > (close_prices[-3] + open_prices[-3]) / 2):  # بسته شدن در میانه شمع اول
+                    patterns['morning_star'] = self.advanced_candlesticks['morning_star']
+            
+            # الگوی ستاره عصرگاهی
+            if len(close_prices) >= 3:
+                if (close_prices[-3] < open_prices[-3] and  # شمع اول صعودی
+                    close_prices[-2] < open_prices[-2] and  # شمع دوم دوجی یا کوچک
+                    abs(close_prices[-2] - open_prices[-2]) < abs(close_prices[-3] - open_prices[-3]) and
+                    close_prices[-1] < open_prices[-1] and  # شمع سوم نزولی
+                    close_prices[-1] < (close_prices[-3] + open_prices[-3]) / 2):  # بسته شدن در میانه شمع اول
+                    patterns['evening_star'] = self.advanced_candlesticks['evening_star']
+            
+            return patterns
         except Exception as e:
-            logger.error(f"Error in advanced candlestick patterns: {e}")
+            logger.error(f"Error in advanced_candlestick_patterns: {e}")
             return {}
     
     def advanced_elliott_wave(self, data):
         """تحلیل امواج الیوت پیشرفته"""
-        if data.empty:
-            return {}
-        
         try:
-            close = data['Close']
+            if data.empty:
+                return {}
             
             # تحلیل ساده امواج الیوت
-            # پیدا کردن نقاط چرخش
-            peaks, _ = find_peaks(close.values, distance=5)
-            troughs, _ = find_peaks(-close.values, distance=5)
+            # در یک پیاده‌سازی واقعی، این تحلیل بسیار پیچیده‌تر خواهد بود
             
-            # ترکیب نقاط
-            pivot_points = sorted(list(peaks) + list(troughs))
+            close_prices = data['Close'].values
             
-            # شناسایی موج فعلی
-            if len(pivot_points) >= 3:
-                # محاسبه جهت موج
-                wave_direction = 'صعودی' if close.iloc[pivot_points[-1]] > close.iloc[pivot_points[-2]] else 'نزولی'
-                
-                # تخمین شماره موج
-                wave_count = len([p for p in pivot_points[-5:] if p in peaks]) if wave_direction == 'صعودی' else len([p for p in pivot_points[-5:] if p in troughs])
-                
-                return {
-                    'current_pattern': f'موج {wave_count}',
-                    'wave_direction': wave_direction,
-                    'pivot_points': pivot_points[-5:],
-                    'confidence': min(wave_count / 5, 1.0)
-                }
+            # پیدا کردن قله‌ها و دره‌ها
+            peaks, _ = find_peaks(close_prices, distance=5)
+            troughs, _ = find_peaks(-close_prices, distance=5)
+            
+            # تحلیل موج فعلی
+            if len(peaks) >= 2 and len(troughs) >= 2:
+                # اگر آخرین قله بالاتر از قله قبلی باشد، در موج صعودی هستیم
+                if close_prices[peaks[-1]] > close_prices[peaks[-2]]:
+                    current_wave = "موج 3 یا 5 صعودی"
+                    next_target = "سطح مقاومت بعدی"
+                # اگر آخرین قله پایین‌تر از قله قبلی باشد، در موج نزولی هستیم
+                else:
+                    current_wave = "موج 3 یا 5 نزولی"
+                    next_target = "سطح حمایت بعدی"
             else:
-                return {
-                    'current_pattern': 'نامشخص',
-                    'wave_direction': 'خنثی',
-                    'pivot_points': [],
-                    'confidence': 0
-                }
+                current_wave = "ناشناخته"
+                next_target = "ناشناخته"
+            
+            # تحلیل الگوی فعلی
+            if len(peaks) >= 5 and len(troughs) >= 5:
+                # تحلیل الگوی 5 موجی
+                if (close_prices[peaks[0]] < close_prices[peaks[1]] < close_prices[peaks[2]] and
+                    close_prices[troughs[0]] < close_prices[troughs[1]] < close_prices[troughs[2]]):
+                    current_pattern = "امواج انگیزشی (Impulse)"
+                else:
+                    current_pattern = "امواج اصلاحی (Corrective)"
+            else:
+                current_pattern = "ناشناخته"
+            
+            return {
+                'current_pattern': current_pattern,
+                'current_wave': current_wave,
+                'next_target': next_target
+            }
         except Exception as e:
-            logger.error(f"Error in advanced Elliott wave: {e}")
+            logger.error(f"Error in advanced_elliott_wave: {e}")
             return {}
     
     def market_structure_analysis(self, data):
         """تحلیل ساختار بازار"""
-        if data.empty:
-            return {}
-        
         try:
-            close = data['Close']
-            high = data['High']
-            low = data['Low']
-            volume = data['Volume']
-            
-            # پیدا کردن نقاط چرخش
-            peaks, _ = find_peaks(high.values, distance=5)
-            troughs, _ = find_peaks(-low.values, distance=5)
-            
-            # شناسایی ساختار بازار
-            market_trend = 'صعودی' if close.iloc[-1] > close.iloc[-20] else 'نزولی'
-            
-            # پیدا کردن Order Block‌ها
-            order_blocks = []
-            
-            for i in range(1, len(close)):
-                # بررسی برای Order Block صعودی
-                if (close.iloc[i] > close.iloc[i-1] and 
-                    close.iloc[i-1] < close.iloc[i-2] and 
-                    volume.iloc[i] > volume.iloc[i-1]):
-                    order_blocks.append({
-                        'type': 'bullish',
-                        'price': close.iloc[i-1],
-                        'index': i-1
-                    })
-                
-                # بررسی برای Order Block نزولی
-                if (close.iloc[i] < close.iloc[i-1] and 
-                    close.iloc[i-1] > close.iloc[i-2] and 
-                    volume.iloc[i] > volume.iloc[i-1]):
-                    order_blocks.append({
-                        'type': 'bearish',
-                        'price': close.iloc[i-1],
-                        'index': i-1
-                    })
-            
-            return {
-                'market_trend': market_trend,
-                'order_blocks': order_blocks[-5:],  # 5 Order Block آخر
-                'swing_highs': [high.iloc[i] for i in peaks[-3:]],
-                'swing_lows': [low.iloc[i] for i in troughs[-3:]]
-            }
-        except Exception as e:
-            logger.error(f"Error in market structure analysis: {e}")
-            return {}
-    
-    def analyze_multi_timeframe(self, symbol):
-        """تحلیل چند زمانی"""
-        try:
-            # دریافت داده‌ها در تایم‌فریم‌های مختلف
-            timeframes = {
-                '1h': '60m',
-                '4h': '4h',
-                '1d': '1d'
-            }
-            
-            multi_tf_analysis = {}
-            
-            for tf_name, tf_value in timeframes.items():
-                try:
-                    tf_data = self.get_historical_data(symbol, period='60d', interval=tf_value)
-                    if not tf_data.empty:
-                        # تحلیل ساده روند
-                        close = tf_data['Close']
-                        sma_20 = talib.SMA(close, timeperiod=20)
-                        sma_50 = talib.SMA(close, timeperiod=50)
-                        
-                        trend = 'صعودی' if sma_20.iloc[-1] > sma_50.iloc[-1] else 'نزولی'
-                        
-                        multi_tf_analysis[tf_name] = {
-                            'trend': trend,
-                            'price': close.iloc[-1],
-                            'sma_20': sma_20.iloc[-1] if not pd.isna(sma_20.iloc[-1]) else 0,
-                            'sma_50': sma_50.iloc[-1] if not pd.isna(sma_50.iloc[-1]) else 0
-                        }
-                except Exception as e:
-                    logger.error(f"Error in {tf_name} timeframe analysis: {e}")
-            
-            return multi_tf_analysis
-        except Exception as e:
-            logger.error(f"Error in multi-timeframe analysis: {e}")
-            return {}
-    
-    def analyze_trading_session(self, symbol):
-        """تحلیل جلسه معاملاتی"""
-        try:
-            # دریافت داده‌های اخیر
-            data = self.get_historical_data(symbol, period='5d')
             if data.empty:
                 return {}
             
-            # تقسیم داده‌ها بر اساس جلسات معاملاتی
-            data.index = pd.to_datetime(data.index)
-            data['hour'] = data.index.hour
+            # تحلیل ساختار بازار
+            close_prices = data['Close'].values
             
-            # تعریف جلسات معاملاتی
-            sessions = {
-                'Asia': (0, 8),
-                'Europe': (8, 16),
-                'America': (16, 24)
-            }
+            # محاسبه سطوح حمایت و مقاومت
+            support_resistance = self.support_resistance_analysis(data)
             
-            session_analysis = {}
+            # تحلیل روند
+            trend_analysis = self.trend_lines_analysis(data)
             
-            for session_name, (start_hour, end_hour) in sessions.items():
-                session_data = data[(data['hour'] >= start_hour) & (data['hour'] < end_hour)]
+            # تحلیل فاز بازار
+            if len(close_prices) >= 20:
+                # محاسبه میانگین متحرک 20 روزه
+                ma20 = np.mean(close_prices[-20:])
                 
-                if not session_data.empty:
-                    session_analysis[session_name] = {
-                        'high': session_data['High'].max(),
-                        'low': session_data['Low'].min(),
-                        'volume': session_data['Volume'].sum(),
-                        'volatility': (session_data['High'].max() - session_data['Low'].min()) / session_data['Close'].mean() * 100
+                # تحلیل فاز بازار
+                if close_prices[-1] > ma20 and trend_analysis['trend'] == "صعودی":
+                    phase = "فاز صعودی (Bullish)"
+                elif close_prices[-1] < ma20 and trend_analysis['trend'] == "نزولی":
+                    phase = "فاز نزولی (Bearish)"
+                else:
+                    phase = "فاز رنج (Ranging)"
+            else:
+                phase = "ناشناخته"
+            
+            return {
+                'trend': trend_analysis['trend'],
+                'phase': phase,
+                'support_level': support_resistance['support'],
+                'resistance_level': support_resistance['resistance']
+            }
+        except Exception as e:
+            logger.error(f"Error in market_structure_analysis: {e}")
+            return {}
+    
+    def analyze_multi_timeframe(self, symbol):
+        """تحلیل چند زمانی (Multi-timeframe)"""
+        try:
+            # دریافت داده‌ها در تایم‌فریم‌های مختلف
+            timeframes = ['1d', '4h', '1h']
+            analysis_results = {}
+            
+            for tf in timeframes:
+                try:
+                    # دریافت داده‌های تاریخی برای این تایم‌فریم
+                    data = self.get_historical_data(symbol, period='60d', interval=tf)
+                    
+                    if not data.empty:
+                        # تحلیل تکنیکال برای این تایم‌فریم
+                        technical = self.advanced_technical_analysis(data)
+                        
+                        # تحلیل روند برای این تایم‌فریم
+                        trend = self.trend_lines_analysis(data)
+                        
+                        # ذخیره نتایج
+                        analysis_results[tf] = {
+                            'technical': technical,
+                            'trend': trend['trend']
+                        }
+                
+                    # رعایت محدودیت درخواست
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"Error in multi-timeframe analysis for {tf}: {e}")
+                    analysis_results[tf] = {
+                        'technical': {},
+                        'trend': 'ناشناخته'
                     }
             
-            return session_analysis
+            return analysis_results
         except Exception as e:
-            logger.error(f"Error in trading session analysis: {e}")
+            logger.error(f"Error in analyze_multi_timeframe: {e}")
+            return {}
+    
+    def analyze_trading_session(self, symbol):
+        """تحلیل جلسه معاملاتی (Trading Session)"""
+        try:
+            # دریافت داده‌های تاریخی برای جلسه معاملاتی فعلی
+            now = datetime.now()
+            
+            # تعیین جلسه معاملاتی فعلی
+            if now.hour >= 0 and now.hour < 8:
+                session = "جلسه آسیایی (Asian Session)"
+            elif now.hour >= 8 and now.hour < 16:
+                session = "جلسه اروپایی (European Session)"
+            else:
+                session = "جلسه آمریکایی (American Session)"
+            
+            # دریافت داده‌های تاریخی برای امروز
+            today = now.strftime('%Y-%m-%d')
+            data = self.get_historical_data(symbol, period='1d', interval='1m')
+            
+            if not data.empty:
+                # فیلتر داده‌های امروز
+                today_data = data[data.index.date == datetime.strptime(today, '%Y-%m-%d').date()]
+                
+                if not today_data.empty:
+                    # محاسبه آمار جلسه معاملاتی
+                    session_high = np.max(today_data['High'].values)
+                    session_low = np.min(today_data['Low'].values)
+                    session_volume = np.sum(today_data['Volume'].values)
+                    
+                    # محاسبه تغییر قیمت
+                    session_open = today_data['Open'].values[0]
+                    session_close = today_data['Close'].values[-1]
+                    session_change = ((session_close - session_open) / session_open) * 100
+                    
+                    return {
+                        'session': session,
+                        'high': session_high,
+                        'low': session_low,
+                        'volume': session_volume,
+                        'change': session_change
+                    }
+            
+            # اگر داده‌ای وجود نداشت، برگردان اطلاعات پیش‌فرض
+            return {
+                'session': session,
+                'high': 0,
+                'low': 0,
+                'volume': 0,
+                'change': 0
+            }
+        except Exception as e:
+            logger.error(f"Error in analyze_trading_session: {e}")
             return {}
     
     def analyze_decision_zones(self, data):
-        """تحلیل نواحی تصمیم‌گیری"""
-        if data.empty:
-            return {}
-        
+        """تحلیل نواحی تصمیم‌گیری (Decision Zones)"""
         try:
-            close = data['Close']
-            volume = data['Volume']
+            if data.empty:
+                return {}
             
-            # محاسبه میانگین متحرک حجم
-            volume_ma = volume.rolling(window=20).mean()
+            # تحلیل نواحی تصمیم‌گیری
+            close_prices = data['Close'].values
             
-            # پیدا کردن نواحی با حجم بالا
-            high_volume_zones = data[volume > volume_ma * 1.5]
+            # محاسبه میانگین متحرک‌ها
+            ma20 = np.mean(close_prices[-20:]) if len(close_prices) >= 20 else np.mean(close_prices)
+            ma50 = np.mean(close_prices[-50:]) if len(close_prices) >= 50 else np.mean(close_prices)
             
-            # گروه‌بندی نواحی نزدیک به هم
-            decision_zones = []
+            # محاسبه باندهای بولینگر
+            if len(close_prices) >= 20:
+                std20 = np.std(close_prices[-20:])
+                upper_bb = ma20 + (2 * std20)
+                lower_bb = ma20 - (2 * std20)
+            else:
+                upper_bb = ma20 * 1.05
+                lower_bb = ma20 * 0.95
             
-            if not high_volume_zones.empty:
-                # مرتب‌سازی بر اساس قیمت
-                sorted_zones = high_volume_zones.sort_values('Close')
-                
-                current_zone = {
-                    'low': sorted_zones.iloc[0]['Close'],
-                    'high': sorted_zones.iloc[0]['Close'],
-                    'volume': sorted_zones.iloc[0]['Volume']
-                }
-                
-                for _, row in sorted_zones.iloc[1:].iterrows():
-                    if row['Close'] - current_zone['high'] < current_zone['high'] * 0.02:
-                        current_zone['high'] = row['Close']
-                        current_zone['volume'] += row['Volume']
-                    else:
-                        decision_zones.append(current_zone)
-                        current_zone = {
-                            'low': row['Close'],
-                            'high': row['Close'],
-                            'volume': row['Volume']
-                        }
-                
-                decision_zones.append(current_zone)
+            # تحلیل نواحی تصمیم‌گیری
+            current_price = close_prices[-1]
             
-            current_price = close.iloc[-1]
-            
-            # پیدا کردن نزدیک‌ترین ناحیه تصمیم‌گیری
-            nearest_zone = None
-            min_distance = float('inf')
-            
-            for zone in decision_zones:
-                if zone['low'] <= current_price <= zone['high']:
-                    nearest_zone = zone
-                    break
-                else:
-                    distance = min(abs(current_price - zone['low']), abs(current_price - zone['high']))
-                    if distance < min_distance:
-                        min_distance = distance
-                        nearest_zone = zone
+            if current_price > upper_bb:
+                decision_zone = "ناحیه اشباع خرید (Overbought)"
+                action = "فروش (Sell)"
+            elif current_price < lower_bb:
+                decision_zone = "ناحیه اشباع فروش (Oversold)"
+                action = "خرید (Buy)"
+            elif current_price > ma20 and current_price > ma50:
+                decision_zone = "ناحیه صعودی (Bullish Zone)"
+                action = "خرید (Buy)"
+            elif current_price < ma20 and current_price < ma50:
+                decision_zone = "ناحیه نزولی (Bearish Zone)"
+                action = "فروش (Sell)"
+            else:
+                decision_zone = "ناحیه خنثی (Neutral Zone)"
+                action = "انتظار (Wait)"
             
             return {
-                'decision_zones': decision_zones,
-                'nearest_zone': nearest_zone,
-                'current_price': current_price,
-                'in_decision_zone': nearest_zone and nearest_zone['low'] <= current_price <= nearest_zone['high']
+                'decision_zone': decision_zone,
+                'action': action,
+                'ma20': ma20,
+                'ma50': ma50,
+                'upper_bb': upper_bb,
+                'lower_bb': lower_bb
             }
         except Exception as e:
-            logger.error(f"Error in decision
+            logger.error(f"Error in analyze_decision_zones: {e}")
+            return {}
+    
+    def analyze_risk_management(self, historical_data, market_data):
+        """تحلیل مدیریت ریسک"""
+        try:
+            if historical_data.empty:
+                return {}
+            
+            close_prices = historical_data['Close'].values
+            current_price = close_prices[-1]
+            
+            # محاسبه ATR (Average True Range)
+            high_prices = historical_data['High'].values
+            low_prices = historical_data['Low'].values
+            
+            if len(close_prices) >= 14:
+                tr = np.zeros(len(close_prices) - 1)
+                for i in range(1, len(close_prices)):
+                    tr[i-1] = max(
+                        high_prices[i] - low_prices[i],
+                        abs(high_prices[i] - close_prices[i-1]),
+                        abs(low_prices[i] - close_prices[i-1])
+                    )
+                
+                atr = np.mean(tr[-14:])
+            else:
+                atr = 0
+            
+            # محاسبه نوسانات
+            if len(close_prices) >= 20:
+                returns = np.diff(close_prices) / close_prices[:-1]
+                volatility = np.std(returns) * np.sqrt(252) * 100  # نوسانات سالانه
+            else:
+                volatility = 0
+            
+            # محاسبه حد ضرر و حد سود
+            if atr > 0:
+                stop_loss = current_price - (2 * atr)
+                take_profit = current_price + (3 * atr)
+                risk_reward_ratio = 3 / 2  # نسبت ریسک به پاداش
+            else:
+                stop_loss = current_price * 0.95  # 5% حد ضرر
+                take_profit = current_price * 1.1  # 10% حد سود
+                risk_reward_ratio = 2  # نسبت ریسک به پاداش
+            
+            # محاسبه حجم پیشنهادی
+            position_size = 0.02  # 2% از سرمایه
+            
+            return {
+                'atr': atr,
+                'volatility': volatility,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'risk_reward_ratio': risk_reward_ratio,
+                'position_size': position_size
+            }
+        except Exception as e:
+            logger.error(f"Error in analyze_risk_management: {e}")
+            return {}
+    
+    def perform_ai_analysis(self, historical_data, market_data, sentiment, economic_sentiment):
+        """تحلیل هوش مصنوعی"""
+        try:
+            if historical_data.empty:
+                return {}
+            
+            close_prices = historical_data['Close'].values
+            current_price = close_prices[-1]
+            
+            # آماده‌سازی داده‌ها برای مدل‌های یادگیری ماشین
+            X, y = self.prepare_data_for_ml(historical_data)
+            
+            if len(X) == 0 or len(y) == 0:
+                return {}
+            
+            # تقسیم داده‌ها به آموزش و تست
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            
+            # آموزش و ارزیابی مدل‌ها
+            model_results = {}
+            
+            for model_name, model in self.models.items():
+                try:
+                    # آموزش مدل
+                    model.fit(X_train, y_train)
+                    
+                    # پیش‌بینی
+                    y_pred = model.predict(X_test)
+                    
+                    # محاسبه خطا
+                    mse = mean_squared_error(y_test, y_pred)
+                    
+                    # ذخیره نتایج
+                    model_results[model_name] = {
+                        'model': model,
+                        'mse': mse
+                    }
+                except Exception as e:
+                    logger.error(f"Error training {model_name}: {e}")
+            
+            # انتخاب بهترین مدل
+            if model_results:
+                best_model_name = min(model_results, key=lambda x: model_results[x]['mse'])
+                best_model = model_results[best_model_name]['model']
+                
+                # پیش‌بینی قیمت آینده
+                last_data = X[-1].reshape(1, -1)
+                future_price = best_model.predict(last_data)[0]
+                
+                # محاسبه اطمینان پیش‌بینی
+                prediction_confidence = 1 - (model_results[best_model_name]['mse'] / np.var(y))
+                prediction_confidence = max(0, min(1, prediction_confidence))
+                
+                # تعیین روند پیش‌بینی
+                if future_price > current_price:
+                    predicted_trend = "صعودی"
+                elif future_price < current_price:
+                    predicted_trend = "نزولی"
+                else:
+                    predicted_trend = "خنثی"
+                
+                return {
+                    'best_model': best_model_name,
+                    'price_prediction': future_price,
+                    'prediction_confidence': prediction_confidence,
+                    'predicted_trend': predicted_trend,
+                    'model_performance': {name: result['mse'] for name, result in model_results.items()}
+                }
+            
+            return {}
+        except Exception as e:
+            logger.error(f"Error in perform_ai_analysis: {e}")
+            return {}
+    
+    def prepare_data_for_ml(self, data):
+        """آماده‌سازی داده‌ها برای مدل‌های یادگیری ماشین"""
+        try:
+            if data.empty:
+                return [], []
+            
+            # استخراج ویژگی‌ها
+            close_prices = data['Close'].values
+            
+            # محاسبه تغییرات قیمت
+            price_changes = np.diff(close_prices)
+            
+            # محاسبه شاخص‌های تکنیکال به عنوان ویژگی
+            features = []
+            
+            # RSI
+            rsi = talib.RSI(close_prices, timeperiod=14)
+            features.append(rsi[~np.isnan(rsi)])
+            
+            # MACD
+            macd, macdsignal, macdhist = talib.MACD(close_prices, fastperiod=12, slowperiod=26, signalperiod=9)
+            features.append(macd[~np.isnan(macd)])
+            features.append(macdsignal[~np.isnan(macdsignal)])
+            features.append(macdhist[~np.isnan(macdhist)])
+            
+            # SMA
+            sma20 = talib.SMA(close_prices, timeperiod=20)
+            sma50 = talib.SMA(close_prices, timeperiod=50)
+            features.append(sma20[~np.isnan(sma20)])
+            features.append(sma50[~np.isnan(sma50)])
+            
+            # Bollinger Bands
+            upper, middle, lower = talib.BBANDS(close_prices, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+            features.append(upper[~np.isnan(upper)])
+            features.append(middle[~np.isnan(middle)])
+            features.append(lower[~np.isnan(lower)])
+            
+            # حجم
+            volume = data['Volume'].values
+            features.append(volume[~np.isnan(volume)])
+            
+            # اطمینان از اینکه همه ویژگی‌ها طول یکسانی دارند
+            min_length = min(len(f) for f in features)
+            features = [f[:min_length] for f in features]
+            
+            # تبدیل به ماتریس ویژگی‌ها
+            X = np.column_stack(features)
+            
+            # هدف: تغییر قیمت بعدی
+            y = price_changes[:min_length]
+            
+            return X, y
+        except Exception as e:
+            logger.error(f"Error in prepare_data_for_ml: {e}")
+            return [], []
+async def main():
+    """تابع اصلی اجرای ربات"""
+    # ایجاد نمونه ربات
+    bot = AdvancedTradingBot()
+    
+    # تنظیمات ربات تلگرام
+    application = Application.builder().token(os.getenv('TELEGRAM_BOT_TOKEN')).build()
+    
+    # تنظیم هندلرها
+    from telegram_handlers import setup_handlers
+    setup_handlers(application, bot)
+    
+    # اجرای ربات
+    logger.info("Starting bot...")
+    await application.run_polling()
+
+if __name__ == '__main__':
+    asyncio.run(main())
