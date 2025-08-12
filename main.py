@@ -2411,15 +2411,7 @@ async def main():
     await application.run_polling()
 
 if __name__ == '__main__':
-    # اصلاح مشکل event loop
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError as ex:
-        if "There is no current event loop in thread" in str(ex):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        else:
-            raise
-    
-    # اجرای برنامه
-    loop.run_until_complete(main())
+    # راه‌حل جایگزین برای مشکل event loop
+    import nest_asyncio
+    nest_asyncio.apply()
+    asyncio.run(main())
