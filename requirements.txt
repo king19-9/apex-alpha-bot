@@ -9,3 +9,4 @@ seaborn
 scipy
 requests
 python-telegram-bot
+TA-Lib
