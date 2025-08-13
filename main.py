@@ -5978,3 +5978,35 @@ def _perform_market_structure_analysis(self, symbol: str, data: Dict) -> Dict:
             })
         
         # ناح
+if __name__ == '__main__':
+    import os
+    from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+    
+    # Initialize the bot
+    bot = AdvancedCryptoBot()
+    
+    # Get the token from environment
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not token:
+        logger.error("TELEGRAM_BOT_TOKEN environment variable not set")
+        exit(1)
+    
+    # Create the Application
+    application = Application.builder().token(token).build()
+    
+    # Add handlers
+    from handlers import TelegramHandlers
+    telegram_handlers = TelegramHandlers()
+    
+    application.add_handler(CommandHandler("start", telegram_handlers.start_command))
+    application.add_handler(CommandHandler("help", telegram_handlers.help_command))
+    application.add_handler(CommandHandler("analyze", telegram_handlers.analyze_command))
+    application.add_handler(CommandHandler("signals", telegram_handlers.signals_command))
+    application.add_handler(CommandHandler("watchlist", telegram_handlers.watchlist_command))
+    application.add_handler(CommandHandler("alerts", telegram_handlers.alerts_command))
+    application.add_handler(CommandHandler("performance", telegram_handlers.performance_command))
+    application.add_handler(CallbackQueryHandler(telegram_handlers.button_callback))
+    
+    # Start the bot
+    logger.info("Starting bot...")
+    application.run_polling()
