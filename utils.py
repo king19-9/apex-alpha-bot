@@ -5,7 +5,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.signal import argrelextrema
-import talib
+import pandas_ta as ta  # جایگزین talib
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +15,7 @@ class AnalysisUtils:
     @staticmethod
     def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
         """محاسبه شاخص RSI"""
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
+        return ta.rsi(prices, length=period)
     
     @staticmethod
     def interpret_rsi(rsi: float) -> str:
@@ -35,16 +30,11 @@ class AnalysisUtils:
     @staticmethod
     def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Dict:
         """محاسبه شاخص MACD"""
-        ema_fast = prices.ewm(span=fast).mean()
-        ema_slow = prices.ewm(span=slow).mean()
-        macd = ema_fast - ema_slow
-        signal_line = macd.ewm(span=signal).mean()
-        histogram = macd - signal_line
-        
+        macd_data = ta.macd(prices, fast=fast, slow=slow, signal=signal)
         return {
-            'macd': macd,
-            'signal': signal_line,
-            'histogram': histogram
+            'macd': macd_data[f'MACD_{fast}_{slow}_{signal}'],
+            'signal': macd_data[f'MACDs_{fast}_{slow}_{signal}'],
+            'histogram': macd_data[f'MACDh_{fast}_{slow}_{signal}']
         }
     
     @staticmethod
@@ -60,15 +50,11 @@ class AnalysisUtils:
     @staticmethod
     def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int = 2) -> Dict:
         """محاسبه بولینگر باند"""
-        middle = prices.rolling(window=period).mean()
-        std = prices.rolling(window=period).std()
-        upper = middle + (std * std_dev)
-        lower = middle - (std * std_dev)
-        
+        bb = ta.bbands(prices, length=period, std=std_dev)
         return {
-            'upper': upper,
-            'middle': middle,
-            'lower': lower
+            'upper': bb[f'BBU_{period}_{std_dev}'],
+            'middle': bb[f'BBM_{period}_{std_dev}'],
+            'lower': bb[f'BBL_{period}_{std_dev}']
         }
     
     @staticmethod
@@ -84,18 +70,8 @@ class AnalysisUtils:
     @staticmethod
     def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
         """محاسبه میانگین دامنه واقعی (ATR)"""
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        
-        tr1 = high - low
-        tr2 = abs(high - close.shift())
-        tr3 = abs(low - close.shift())
-        
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
-        
-        return atr.iloc[-1]
+        atr = ta.atr(df['high'], df['low'], df['close'], length=period)
+        return atr.iloc[-1] if not pd.isna(atr.iloc[-1]) else 0
     
     @staticmethod
     def identify_pivot_points(df: pd.DataFrame) -> List[Dict]:
@@ -219,8 +195,8 @@ class AnalysisUtils:
         if len(df) < 50:
             return 'neutral'
         
-        df['sma_20'] = talib.SMA(df['close'], timeperiod=20)
-        df['sma_50'] = talib.SMA(df['close'], timeperiod=50)
+        df['sma_20'] = ta.sma(df['close'], length=20)
+        df['sma_50'] = ta.sma(df['close'], length=50)
         current_price = df['close'].iloc[-1]
         sma_20 = df['sma_20'].iloc[-1]
         sma_50 = df['sma_50'].iloc[-1]

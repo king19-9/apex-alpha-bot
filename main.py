@@ -17,7 +17,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import talib
+import pandas_ta as ta
 from scipy.fft import fft, fftfreq
 import matplotlib.pyplot as plt
 import io
