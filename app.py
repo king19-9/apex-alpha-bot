@@ -1830,7 +1830,11 @@ def run_telegram():
         except Exception as e:
             await update.message.reply_text(f"خطا: {e}")
 
-    application = ApplicationBuilder().token(S.TELEGRAM_BOT_TOKEN).build()
+    application = ApplicationBuilder()\
+        .token(S.TELEGRAM_BOT_TOKEN)\
+        .post_init(lambda app: schedule_jobs(app, bot))\
+        .build()
+
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("ping", cmd_ping))
@@ -1853,8 +1857,7 @@ def run_telegram():
         try: db_add_subscriber(int(S.TELEGRAM_CHAT_ID))
         except: pass
 
-    # schedule (no application.job_queue.start(); PTB starts it internally)
-    application.create_task(schedule_jobs(application, bot))
+    # schedule is handled via post_init; PTB starts JobQueue automatically
     application.run_polling()
 
 # ---------------- Entry ----------------
