@@ -142,11 +142,13 @@ def _dsn():
 engine = create_engine(_dsn(), pool_pre_ping=True, future=True)
 
 def db_init():
+    backend = engine.url.get_backend_name()
+    pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if backend.startswith("sqlite") else "BIGSERIAL PRIMARY KEY"
     with engine.begin() as conn:
         conn.execute(text("""CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY)"""))
         conn.execute(text("""CREATE TABLE IF NOT EXISTS watchlist (symbol TEXT PRIMARY KEY)"""))
-        conn.execute(text("""CREATE TABLE IF NOT EXISTS signals (
-            id BIGSERIAL PRIMARY KEY,
+        conn.execute(text(f"""CREATE TABLE IF NOT EXISTS signals (
+            id {pk},
             ts BIGINT, symbol TEXT, signal TEXT, confidence DOUBLE PRECISION, price DOUBLE PRECISION,
             source TEXT, evaluated INT DEFAULT 0, ret DOUBLE PRECISION
         )"""))
@@ -157,8 +159,8 @@ def db_init():
             symbol TEXT, timeframe TEXT, buy DOUBLE PRECISION, sell DOUBLE PRECISION,
             PRIMARY KEY(symbol, timeframe)
         )"""))
-        conn.execute(text("""CREATE TABLE IF NOT EXISTS whale_events (
-            id BIGSERIAL PRIMARY KEY,
+        conn.execute(text(f"""CREATE TABLE IF NOT EXISTS whale_events (
+            id {pk},
             ts BIGINT, exchange TEXT, symbol TEXT, bias DOUBLE PRECISION, notional DOUBLE PRECISION, evaluated INT DEFAULT 0, ret DOUBLE PRECISION
         )"""))
         conn.execute(text("""CREATE TABLE IF NOT EXISTS whale_perf (
@@ -1415,8 +1417,9 @@ async def evaluate_whales_async(horizon_hours: int = None):
 
 # ---------------- Realtime Monitor (fast polling) ----------------
 async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
-    if not S.ENABLE_MONITOR: return
     app = context.application
+    if not app.bot_data.get("monitor_enabled", S.ENABLE_MONITOR):
+        return
     bot_instance: CryptoBotAI = app.bot_data.get("bot_instance")
     if not bot_instance: return
     try:
@@ -1428,7 +1431,8 @@ async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
             app.bot_data["monitor_offset"]=0
         symbols = app.bot_data["universe"]
         offset = int(app.bot_data.get("monitor_offset",0))
-        batch_size = min(S.MONITOR_TOPN, 40)
+        topn_runtime = int(app.bot_data.get("monitor_topn", S.MONITOR_TOPN))
+        batch_size = min(topn_runtime, 40)
         batch = symbols[offset:offset+batch_size]
         if not batch: 
             offset = 0; batch = symbols[:batch_size]
@@ -1477,26 +1481,29 @@ class WSManager:
         url = "wss://ws-feed.exchange.coinbase.com"
         product_ids = [f"{s}-USD" for s in symbols[:100]]
         msg_sub = {"type":"subscribe","channels":[{"name":"ticker","product_ids": product_ids}]}
-        async for ws in websockets.connect(url, max_queue=1000, ping_interval=20, ping_timeout=20):
+        while self.running:
             try:
-                await ws.send(_json.dumps(msg_sub))
-                self.subscribed = set(product_ids)
-                while True:
-                    raw = await ws.recv()
-                    data = _json.loads(raw)
-                    if data.get("type")=="ticker" and data.get("product_id"):
-                        pid = data["product_id"]
-                        sym = pid.split("-")[0]
-                        await self.queue.put(sym)
+                async with websockets.connect(url, max_queue=1000, ping_interval=20, ping_timeout=20) as ws:
+                    await ws.send(_json.dumps(msg_sub))
+                    self.subscribed = set(product_ids)
+                    while self.running:
+                        raw = await ws.recv()
+                        data = _json.loads(raw)
+                        if data.get("type")=="ticker" and data.get("product_id"):
+                            pid = data["product_id"]
+                            sym = pid.split("-")[0]
+                            await self.queue.put(sym)
             except Exception as e:
                 logger.error(f"WS coinbase error: {e}")
                 await asyncio.sleep(5)
                 continue
 
     async def consumer(self, bot_instance: 'CryptoBotAI'):
-        subs = db_get_subscribers()
-        if not subs: return
         while self.running:
+            subs = db_get_subscribers()
+            if not subs:
+                await asyncio.sleep(5)
+                continue
             sym = await self.queue.get()
             now=int(time.time())
             last_alert = db_get_last_alert(sym) or 0
@@ -1679,8 +1686,10 @@ def run_telegram():
             for s in top:
                 analysis = await bot.analyze_symbol(s["symbol"])
                 price = analysis.get("market_data",{}).get("price")
-                lines.append(f"• {s['symbol']}: {analysis.get('signal','HOLD')} ({analysis.get('confidence',0.5):.1%}) | قیمت: {price:.4f}")
-                db_log_signal(int(time.time()), s["symbol"], analysis.get("signal","HOLD"), float(analysis.get("confidence",0.5)), float(price) if price else None, "manual")
+                price_str = fmt_num(price, 4)
+                conf = analysis.get("confidence", 0.5)
+                lines.append(f"• {s['symbol']}: {analysis.get('signal','HOLD')} ({conf:.1%}) | قیمت: {price_str}")
+                db_log_signal(int(time.time()), s["symbol"], analysis.get("signal","HOLD"), float(conf), float(price) if price else None, "manual")
             for part in split_message("\n".join(lines)): await update.message.reply_text(part)
         except Exception as e:
             logger.error(f"/signals error: {e}"); await update.message.reply_text(f"خطا در دریافت سیگنال‌ها: {e}")
@@ -1732,26 +1741,35 @@ def run_telegram():
         lines += [f"- {r['exchange']}/{r['symbol']}: Hit {r['hit_rate']:.2f} | AvgRet {r['avg_ret']:+.4f} | n={r['count']}" for r in rows]
         await update.message.reply_text("\n".join(lines))
 
-    STATE = {"autosignals": S.ENABLE_AUTOSIGNALS, "interval": S.AUTO_SIGNAL_INTERVAL_MINUTES, "topn": S.AUTO_SIGNAL_TOPN,
-             "monitor": S.ENABLE_MONITOR, "monitor_interval": S.MONITOR_INTERVAL_SEC}
+    STATE = {
+        "autosignals": S.ENABLE_AUTOSIGNALS,
+        "interval": S.AUTO_SIGNAL_INTERVAL_MINUTES,
+        "topn": S.AUTO_SIGNAL_TOPN,
+        "monitor": S.ENABLE_MONITOR,
+        "monitor_interval": S.MONITOR_INTERVAL_SEC,
+        "monitor_topn": S.MONITOR_TOPN,
+    }
 
     async def autosignals_job(context: ContextTypes.DEFAULT_TYPE):
         app = context.application
         bot_instance: CryptoBotAI = app.bot_data.get("bot_instance")
-        if STATE.get("autosignals"):
-            signals = await bot_instance.get_trading_signals()
-            if signals:
-                subs = db_get_subscribers()
-                top = sorted(signals, key=lambda x: x["confidence"], reverse=True)[:STATE.get("topn",10)]
-                lines=["🔥 برترین سیگنال‌ها (Auto):"]
-                for s in top:
-                    analysis = await bot_instance.analyze_symbol(s["symbol"])
-                    md=analysis.get("market_data",{}).get("price")
-                    lines.append(f"• {s['symbol']}: {analysis.get('signal','HOLD')} ({analysis.get('confidence',0.5):.1%}) | قیمت: {md:.4f}")
-                    db_log_signal(int(time.time()), s["symbol"], analysis.get("signal","HOLD"), float(analysis.get("confidence",0.5)), float(md) if md else None, "auto")
-                msg="\n".join(lines)
-                for chat_id in subs:
-                    await app.bot.send_message(chat_id=chat_id, text=msg)
+        if not STATE.get("autosignals"):
+            return
+        signals = await bot_instance.get_trading_signals()
+        if signals:
+            subs = db_get_subscribers()
+            top = sorted(signals, key=lambda x: x["confidence"], reverse=True)[:STATE.get("topn",10)]
+            lines=["🔥 برترین سیگنال‌ها (Auto):"]
+            for s in top:
+                analysis = await bot_instance.analyze_symbol(s["symbol"])
+                price = analysis.get("market_data",{}).get("price")
+                price_str = fmt_num(price, 4)
+                conf = analysis.get("confidence", 0.5)
+                lines.append(f"• {s['symbol']}: {analysis.get('signal','HOLD')} ({conf:.1%}) | قیمت: {price_str}")
+                db_log_signal(int(time.time()), s["symbol"], analysis.get("signal","HOLD"), float(conf), float(price) if price else None, "auto")
+            msg="\n".join(lines)
+            for chat_id in subs:
+                await app.bot.send_message(chat_id=chat_id, text=msg)
 
     async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
         app = context.application
@@ -1773,6 +1791,8 @@ def run_telegram():
 
     async def schedule_jobs(app, bot_instance: CryptoBotAI):
         app.bot_data["bot_instance"]=bot_instance
+        app.bot_data["monitor_enabled"] = STATE.get("monitor", S.ENABLE_MONITOR)
+        app.bot_data["monitor_topn"] = STATE.get("monitor_topn", S.MONITOR_TOPN)
         # HTTP dashboard
         if S.ENABLE_HTTP:
             asyncio.create_task(start_http_server())
@@ -1794,21 +1814,26 @@ def run_telegram():
             delay = (target - now).total_seconds()
             app.job_queue.run_repeating(daily_report_job, interval=24*3600, first=delay, name="dailyreport")
         # monitor
-        if STATE.get("monitor"):
-            app.job_queue.run_repeating(monitor_job, interval=S.MONITOR_INTERVAL_SEC, first=30, name="monitor")
+        if app.bot_data["monitor_enabled"]:
+            app.job_queue.run_repeating(monitor_job, interval=STATE.get("monitor_interval", S.MONITOR_INTERVAL_SEC), first=30, name="monitor")
 
     async def cmd_autosignals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if not context.args:
                 await update.message.reply_text("نمونه: /autosignals on 60 10  یا  /autosignals off"); return
             mode=context.args[0].lower()
+            app = context.application
             if mode=="on":
                 interval=int(context.args[1]) if len(context.args)>1 else STATE["interval"]
                 topn=int(context.args[2]) if len(context.args)>2 else STATE["topn"]
                 STATE["autosignals"]=True; STATE["interval"]=interval; STATE["topn"]=topn
+                for j in app.job_queue.get_jobs_by_name("autosignals"): j.schedule_removal()
+                app.job_queue.run_repeating(autosignals_job, interval=interval*60, first=5, name="autosignals")
                 await update.message.reply_text(f"✅ ارسال خودکار فعال شد. هر {interval} دقیقه، Top {topn}.")
             elif mode=="off":
-                STATE["autosignals"]=False; await update.message.reply_text("⛔️ ارسال خودکار غیرفعال شد.")
+                STATE["autosignals"]=False
+                for j in app.job_queue.get_jobs_by_name("autosignals"): j.schedule_removal()
+                await update.message.reply_text("⛔️ ارسال خودکار غیرفعال شد.")
             else:
                 await update.message.reply_text("حالت نامعتبر. از on/off استفاده کنید.")
         except Exception as e:
@@ -1819,12 +1844,21 @@ def run_telegram():
             if not context.args:
                 await update.message.reply_text("نمونه: /monitor on 90 100  یا  /monitor off"); return
             mode=context.args[0].lower()
+            app = context.application
             if mode=="on":
-                interval=int(context.args[1]) if len(context.args)>1 else S.MONITOR_INTERVAL_SEC
-                STATE["monitor"]=True; STATE["monitor_interval"]=interval
-                await update.message.reply_text(f"✅ مانیتور لحظه‌ای فعال شد. هر {interval}s اسکن.")
+                interval=int(context.args[1]) if len(context.args)>1 else STATE["monitor_interval"]
+                topn=int(context.args[2]) if len(context.args)>2 else STATE.get("monitor_topn", S.MONITOR_TOPN)
+                STATE["monitor"]=True; STATE["monitor_interval"]=interval; STATE["monitor_topn"]=topn
+                app.bot_data["monitor_enabled"] = True
+                app.bot_data["monitor_topn"] = topn
+                for j in app.job_queue.get_jobs_by_name("monitor"): j.schedule_removal()
+                app.job_queue.run_repeating(monitor_job, interval=interval, first=5, name="monitor")
+                await update.message.reply_text(f"✅ مانیتور لحظه‌ای فعال شد. هر {interval}s اسکن. TopN={topn}")
             elif mode=="off":
-                STATE["monitor"]=False; await update.message.reply_text("⛔️ مانیتور لحظه‌ای غیرفعال شد.")
+                STATE["monitor"]=False
+                app.bot_data["monitor_enabled"] = False
+                for j in app.job_queue.get_jobs_by_name("monitor"): j.schedule_removal()
+                await update.message.reply_text("⛔️ مانیتور لحظه‌ای غیرفعال شد.")
             else:
                 await update.message.reply_text("حالت نامعتبر. on/off")
         except Exception as e:
