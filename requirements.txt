@@ -10,6 +10,3 @@ python-dotenv
 sqlalchemy
 psycopg2-binary
 websockets
-transformers
-torch
-sentencepiece
