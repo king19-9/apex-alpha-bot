@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 # app.py - Heavy single-file crypto AI bot + Telegram + Autoschedule + Reports + Optimized Ensemble
-# Now includes:
+# Includes:
 # - PostgreSQL/SQLite persistence (SQLAlchemy)
 # - WebSocket (Coinbase Ticker) realtime pushes + fast-polling fallback monitor
 # - HTTP Dashboard (aiohttp web): /health, /stats, /best-whales, /signals/recent, /watchlist
-# - All previous features preserved (multi-timeframe analysis, advanced technicals, Elliott, market structure, sessions,
-#   NLP sentiment, quant ML with calibration + threshold opt, whales, risk, autosignals, reports, watchlist, ...)
+# - All analytical features: multi-timeframe analysis, advanced technicals, Elliott, market structure, sessions,
+#   NLP sentiment (VADER; will fallback if transformers not installed), quant ML with calibration + threshold opt,
+#   whales, derivatives (funding/open interest when supported), risk mgmt, autosignals, reports, watchlist.
 
 import os, sys, time, asyncio, statistics, random, logging, json, datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
@@ -79,10 +80,10 @@ class Settings:
 
     # Bot runtime
     OFFLINE_MODE: bool = getenv_bool("OFFLINE_MODE", False)
-    EXCHANGES: List[str] = getenv_list("EXCHANGES", "kraken,kucoin,bybit,bitfinex,coinbase")
+    EXCHANGES: List[str] = field(default_factory=lambda: getenv_list("EXCHANGES", "kraken,kucoin,bybit,bitfinex,coinbase"))
     UNIVERSE_SCOPE: str = os.getenv("UNIVERSE_SCOPE","top200")
     MAX_COINS: int = int(os.getenv("MAX_COINS","200"))
-    TIMEFRAMES: List[str] = getenv_list("TIMEFRAMES","1h,4h,1d")
+    TIMEFRAMES: List[str] = field(default_factory=lambda: getenv_list("TIMEFRAMES","1h,4h,1d"))
     MODEL_MAX_TRAIN_BARS: int = int(os.getenv("MODEL_MAX_TRAIN_BARS","1500"))
     CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS","300"))
     CONCURRENT_REQUESTS: int = int(os.getenv("CONCURRENT_REQUESTS","10"))
@@ -1393,7 +1394,6 @@ async def evaluate_whales_async(horizon_hours: int = None):
     if not events: return
     for ev in events:
         id_, sym, ex = ev["id"], ev["symbol"], ev["exchange"]
-        # crude evaluation: compare last day
         price_then=None; price_now=None
         try:
             m = await cg_fetch_market_by_symbol(sym); price_now = m.get("price")
@@ -1688,7 +1688,6 @@ def run_telegram():
         try:
             hours = int(context.args[0]) if context.args else S.PERFORMANCE_HORIZON_HOURS
             await update.message.reply_text(f"⏳ در حال تهیه گزارش {hours}h ...")
-            # evaluate whales too
             await evaluate_whales_async(hours)
             stats = await evaluate_logged_signals_async(hours)
             if stats.get("evaluated",0)==0:
@@ -1741,7 +1740,6 @@ def run_telegram():
         if STATE.get("autosignals"):
             signals = await bot_instance.get_trading_signals()
             if signals:
-                # send top N
                 subs = db_get_subscribers()
                 top = sorted(signals, key=lambda x: x["confidence"], reverse=True)[:STATE.get("topn",10)]
                 lines=["🔥 برترین سیگنال‌ها (Auto):"]
@@ -1780,7 +1778,6 @@ def run_telegram():
         # WS start
         wsman.app = app
         try:
-            # subscribe WS on top symbols
             uni = await discover_universe()
             syms = [c["symbol"] for c in uni][:min(100, len(uni))]
             await wsman.start(bot_instance, syms)
