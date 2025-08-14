@@ -143,7 +143,7 @@ class DatabaseManager:
                 cursor.execute('''
                 INSERT INTO analysis_performance 
                 (symbol, method, timestamp, signal, confidence, actual_outcome, success, profit_loss, market_conditions)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     data['symbol'],
                     data['method'],

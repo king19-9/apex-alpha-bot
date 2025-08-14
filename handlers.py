@@ -249,7 +249,7 @@ class TelegramHandlers:
             response = "📈 *سیگنال‌های معاملاتی*\n\n"
             
             # نمایش 10 سیگنال برتر
-            for i, signal in enumerate(signings[:10]):
+            for i, signal in enumerate(signals[:10]):
                 signal_emoji = "🟢" if signal['signal'] == "BUY" else "🔴" if signal['signal'] == "SELL" else "🟡"
                 
                 response += f"{signal_emoji} *{signal['symbol']}*\n"
@@ -263,7 +263,7 @@ class TelegramHandlers:
                     response += f"🎯 حد سود: ${signal['take_profit']:,.2f}\n"
                     response += f"⚖️ نسبت ریسک به پاداش: {signal.get('risk_reward_ratio', 0):.2f}\n"
                 
-                response += "\\n"
+                response += "\n"
             
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="refresh_signals")],
@@ -618,4 +618,120 @@ class TelegramHandlers:
             analysis = await self.bot.perform_intelligent_analysis(symbol)
             
             # ارسال نتیجه تحلیل
-            response =
+            response = self.bot.format_analysis_response(analysis)
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 تحلیل مجدد", callback_data=f"analyze_{symbol}")],
+                [InlineKeyboardButton("📊 سیگنال‌ها", callback_data="signals")],
+                [InlineKeyboardButton("📋 افزودن به واچ‌لیست", callback_data=f"watchlist_add_{symbol}")],
+                [InlineKeyboardButton("⚠️ افزودن هشدار", callback_data=f"alert_add_{symbol}")]
+            ])
+            
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=update.callback_query.message.message_id,
+                text=response,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+            
+            # ذخیره تحلیل در پایگاه داده
+            self.db.save_analysis_performance({
+                'symbol': symbol,
+                'method': 'user_request',
+                'timestamp': analysis['timestamp'],
+                'signal': analysis['signal'],
+                'confidence': analysis['confidence'],
+                'market_conditions': {
+                    'price': analysis.get('market_data', {}).get('price', 0),
+                    'volume_24h': analysis.get('market_data', {}).get('volume_24h', 0),
+                    'market_cap': analysis.get('market_data', {}).get('market_cap', 0)
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in analyze button: {e}")
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=update.callback_query.message.message_id,
+                text="❌ خطا در تحلیل. لطفاً دوباره تلاش کنید."
+            )
+    
+    async def _handle_signals_button(self, update: Update, context: CallbackContext):
+        """پرداخ به دکمه سیگنال‌ها"""
+        await self.signals_command(update, context)
+    
+    async def _handle_refresh_signals_button(self, update: Update, context: CallbackContext):
+        """پرداخ به دکمه به‌روزرسانی سیگنال‌ها"""
+        await self.signals_command(update, context)
+    
+    async def _handle_watchlist_add_button(self, update: Update, context: CallbackContext, symbol: str):
+        """پرداخ به دکمه افزودن به واچ‌لیست"""
+        user_id = update.effective_user.id
+        
+        self.db.add_to_watchlist(user_id, symbol)
+        
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=update.callback_query.message.message_id,
+            text=f"✅ {symbol} به واچ‌لیست اضافه شد."
+        )
+    
+    async def _handle_refresh_watchlist_button(self, update: Update, context: CallbackContext):
+        """پرداخ به دکمه به‌روزرسانی واچ‌لیست"""
+        user_id = update.effective_user.id
+        watchlist = self.db.get_watchlist(user_id)
+        
+        if not watchlist:
+            response = "📋 واچ‌لیست شما خالی است."
+        else:
+            response = "📋 *واچ‌لیست شما*\n\n"
+            for symbol in watchlist:
+                response += f"• {symbol}\n"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="refresh_watchlist")],
+            [InlineKeyboardButton("📊 سیگنال‌ها", callback_data="signals")]
+        ])
+        
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=update.callback_query.message.message_id,
+            text=response,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    
+    async def _handle_alert_add_button(self, update: Update, context: CallbackContext, symbol: str):
+        """پرداخ به دکمه افزودن هشدار"""
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=update.callback_query.message.message_id,
+            text=f"⚠️ لطفاً از دستور `/alerts add {symbol} <price> <type>` برای افزودن هشدار استفاده کنید.\n\nمثال: `/alerts add {symbol} 50000 above`"
+        )
+    
+    async def _handle_refresh_alerts_button(self, update: Update, context: CallbackContext):
+        """پرداخ به دکمه به‌روزرسانی هشدارها"""
+        user_id = update.effective_user.id
+        alerts = self.db.get_alerts(user_id)
+        
+        if not alerts:
+            response = "⚠️ هشدار فعالی وجود ندارد."
+        else:
+            response = "⚠️ *هشدارهای فعال*\n\n"
+            for alert in alerts:
+                alert_type = "بالاتر از" if alert['alert_type'] == 'above' else "پایین‌تر از" if alert['alert_type'] == 'below' else "تغییر"
+                response += f"• {alert['symbol']}: {alert_type} ${alert['target_price']:,.2f}\n"
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="refresh_alerts")],
+            [InlineKeyboardButton("📊 سیگنال‌ها", callback_data="signals")]
+        ])
+        
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=update.callback_query.message.message_id,
+            text=response,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )

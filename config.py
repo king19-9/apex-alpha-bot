@@ -1,3 +1,4 @@
+
 import os
 from typing import Dict, Any
 
@@ -21,7 +22,7 @@ class Config:
     
     # تنظیمات تحلیل
     CONFIDENCE_THRESHOLD = 0.85
-    RISK_REWARD_RATIO = 1:3
+    RISK_REWARD_RATIO = 3  # نسبت ریسک به پاداش 1:3
     MAX_POSITION_SIZE = 0.1
     
     # تنظیمات پایگاه داده
