@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# app.py - Heavy single-file crypto AI bot + Telegram + Autoschedule + Reports + Optimized Ensemble
-# Includes:
-# - PostgreSQL/SQLite persistence (SQLAlchemy)
-# - WebSocket (Coinbase Ticker) realtime pushes + fast-polling fallback monitor
-# - HTTP Dashboard (aiohttp web): /health, /stats, /best-whales, /signals/recent, /watchlist
-# - All analytical features: multi-timeframe analysis, advanced technicals, Elliott, market structure, sessions,
-#   NLP sentiment (VADER; will fallback if transformers not installed), quant ML with calibration + threshold opt,
-#   whales, derivatives (funding/open interest when supported), risk mgmt, autosignals, reports, watchlist.
+# Advanced 24/7 Crypto AI Bot: Telegram + Autoscan + Whales + Research Engine + Deep Backtest + Self-improving
+# - PostgreSQL/SQLite (SQLAlchemy)
+# - WebSocket (Coinbase) + HTTP Dashboard
+# - Multi-timeframe analysis, advanced TA, Elliott, market structure, sessions
+# - NLP sentiment (VADER; transformers fallback)
+# - Quant ML (RF calibration + stacking) + threshold opt + persistence/learning
+# - 24/7 autoscan of universe + deep backtests + strategy optimizer + whales monitor
+# - Risk mgmt + leverage suggestion + smart entry/exit + reports
 
 import os, sys, time, asyncio, statistics, random, logging, json, datetime
 from dataclasses import dataclass, field
@@ -49,9 +49,11 @@ TELEGRAM_AVAILABLE = False
 try:
     from telegram import Update
     from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+    from telegram.constants import ChatAction
     TELEGRAM_AVAILABLE = True
 except Exception:
     TELEGRAM_AVAILABLE = False
+    ChatAction = None
 
 # SQLAlchemy (Postgres/SQLite)
 from sqlalchemy import create_engine, text
@@ -76,7 +78,7 @@ class Settings:
 
     # Telegram
     TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_CHAT_ID: Optional[str] = os.getenv("TELEGRAM_CHAT_ID")  # default subscriber (optional)
+    TELEGRAM_CHAT_ID: Optional[str] = os.getenv("TELEGRAM_CHAT_ID")
 
     # Bot runtime
     OFFLINE_MODE: bool = getenv_bool("OFFLINE_MODE", False)
@@ -111,7 +113,7 @@ class Settings:
     FUNDING_ENABLED: bool = getenv_bool("FUNDING_ENABLED", True)
 
     # DB (Postgres/SQLite)
-    POSTGRES_DSN: Optional[str] = os.getenv("POSTGRES_DSN")  # e.g. postgres://user:pass@host:5432/db
+    POSTGRES_DSN: Optional[str] = os.getenv("POSTGRES_DSN")
     SQLITE_PATH: str = os.getenv("SQLITE_PATH","bot.db")
 
     # HTTP Dashboard
@@ -121,6 +123,33 @@ class Settings:
     # CLI
     SYMBOL: str = os.getenv("SYMBOL","BTC")
     PRINT_SIGNALS: bool = getenv_bool("PRINT_SIGNALS", False)
+
+    # Fast response + warmup
+    FAST_RESPONSE: bool = getenv_bool("FAST_RESPONSE", True)
+    FAST_FETCH_OHLCV_LIMIT: int = int(os.getenv("FAST_FETCH_OHLCV_LIMIT","500"))
+    FAST_WHALES_TIMEOUT_SEC: int = int(os.getenv("FAST_WHALES_TIMEOUT_SEC","5"))
+    FAST_ORDERBOOK_TIMEOUT_SEC: int = int(os.getenv("FAST_ORDERBOOK_TIMEOUT_SEC","5"))
+    FAST_DERIV_TIMEOUT_SEC: int = int(os.getenv("FAST_DERIV_TIMEOUT_SEC","4"))
+    MODEL_WARMUP_ON_START: bool = getenv_bool("MODEL_WARMUP_ON_START", True)
+    MODEL_WARMUP_TOPN: int = int(os.getenv("MODEL_WARMUP_TOPN","30"))
+
+    # Deep research / autoscan 24/7
+    ENABLE_AUTOSCAN: bool = getenv_bool("ENABLE_AUTOSCAN", True)
+    AUTOSCAN_INTERVAL_MINUTES: int = int(os.getenv("AUTOSCAN_INTERVAL_MINUTES","45"))
+    RESEARCH_TOPN: int = int(os.getenv("RESEARCH_TOPN","80"))
+    DEEP_HISTORY: bool = getenv_bool("DEEP_HISTORY", True)
+    DEEP_HISTORY_LIMIT_1D: int = int(os.getenv("DEEP_HISTORY_LIMIT_1D","1500"))
+    DEEP_HISTORY_LIMIT_4H: int = int(os.getenv("DEEP_HISTORY_LIMIT_4H","2000"))
+    DEEP_HISTORY_LIMIT_1H: int = int(os.getenv("DEEP_HISTORY_LIMIT_1H","4000"))
+
+    # Whales 24/7
+    WHALE_WATCH_TOPN: int = int(os.getenv("WHALE_WATCH_TOPN","120"))
+    WHALE_JOB_INTERVAL_SEC: int = int(os.getenv("WHALE_JOB_INTERVAL_SEC","180"))
+    WHALE_ALERT_NOTIONAL: float = float(os.getenv("WHALE_ALERT_NOTIONAL","1000000"))
+    WHALE_ALERT_BIAS: float = float(os.getenv("WHALE_ALERT_BIAS","0.35"))
+
+    # News digest
+    NEWS_DIGEST_INTERVAL_MINUTES: int = int(os.getenv("NEWS_DIGEST_INTERVAL_MINUTES","240"))
 
 S = Settings()
 
@@ -168,6 +197,23 @@ def db_init():
             PRIMARY KEY(exchange, symbol)
         )"""))
         conn.execute(text("""CREATE TABLE IF NOT EXISTS configs (key TEXT PRIMARY KEY, value TEXT)"""))
+        # New: research/model persistence
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS model_registry (
+            symbol TEXT, timeframe TEXT, model TEXT, acc DOUBLE PRECISION, updated_ts BIGINT,
+            PRIMARY KEY(symbol, timeframe, model)
+        )"""))
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS strat_perf (
+            symbol TEXT, timeframe TEXT, strategy TEXT,
+            hit DOUBLE PRECISION, avg_ret DOUBLE PRECISION, sharpe DOUBLE PRECISION, pf DOUBLE PRECISION, updated_ts BIGINT,
+            PRIMARY KEY(symbol, timeframe, strategy)
+        )"""))
+        conn.execute(text(f"""CREATE TABLE IF NOT EXISTS research_opportunities (
+            id {pk},
+            ts BIGINT, symbol TEXT, timeframe TEXT, signal TEXT,
+            prob DOUBLE PRECISION, rr DOUBLE PRECISION,
+            entry DOUBLE PRECISION, sl DOUBLE PRECISION, tp1 DOUBLE PRECISION, tp2 DOUBLE PRECISION,
+            leverage DOUBLE PRECISION, notes TEXT
+        )"""))
 
 db_init()
 
@@ -277,6 +323,40 @@ def db_recent_signals(limit: int = 50):
                                     FROM signals ORDER BY ts DESC LIMIT :l"""), {"l": limit}).mappings().all()
     return rows
 
+# New: model & strategy persistence + research opps
+def db_upsert_model_registry(symbol: str, timeframe: str, model: str, acc: float):
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO model_registry(symbol,timeframe,model,acc,updated_ts)
+                             VALUES(:s,:tf,:m,:a,:t)
+                             ON CONFLICT(symbol,timeframe,model) DO UPDATE SET acc=excluded.acc, updated_ts=excluded.updated_ts"""),
+                     {"s": symbol.upper(), "tf": timeframe, "m": model, "a": float(acc), "t": int(time.time())})
+
+def db_upsert_strat_perf(symbol: str, timeframe: str, strategy: str, metrics: Dict[str, float]):
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO strat_perf(symbol,timeframe,strategy,hit,avg_ret,sharpe,pf,updated_ts)
+                             VALUES(:s,:tf,:st,:h,:avg,:sh,:pf,:t)
+                             ON CONFLICT(symbol,timeframe,strategy) DO UPDATE SET
+                             hit=excluded.hit, avg_ret=excluded.avg_ret, sharpe=excluded.sharpe, pf=excluded.pf, updated_ts=excluded.updated_ts"""),
+                     {"s": symbol.upper(), "tf": timeframe, "st": strategy,
+                      "h": float(metrics.get("hit",0.5)), "avg": float(metrics.get("avg",0.0)),
+                      "sh": float(metrics.get("sharpe",0.0)), "pf": float(metrics.get("pf",1.0)),
+                      "t": int(time.time())})
+
+def db_insert_research_opp(ts: int, symbol: str, timeframe: str, signal: str, prob: float, rr: float,
+                           entry: float, sl: float, tp1: float, tp2: float, leverage: float, notes: str=""):
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO research_opportunities(ts,symbol,timeframe,signal,prob,rr,entry,sl,tp1,tp2,leverage,notes)
+                             VALUES(:ts,:s,:tf,:sig,:p,:rr,:e,:sl,:tp1,:tp2,:lev,:n)"""),
+                     {"ts": ts, "s": symbol.upper(), "tf": timeframe, "sig": signal, "p": float(prob),
+                      "rr": float(rr), "e": float(entry), "sl": float(sl), "tp1": float(tp1),
+                      "tp2": float(tp2), "lev": float(leverage), "n": notes})
+
+def db_recent_opportunities(limit: int = 20):
+    with engine.begin() as conn:
+        rows = conn.execute(text("""SELECT * FROM research_opportunities ORDER BY ts DESC LIMIT :l"""),
+                            {"l": limit}).mappings().all()
+    return rows
+
 # ---------------- Cache ----------------
 class TTLCache:
     def __init__(self, ttl_seconds: int = S.CACHE_TTL_SECONDS):
@@ -378,16 +458,14 @@ def cc_tf_to_path(tf: str)->str:
 def cc_agg(tf: str)->int:
     return {"4h":4}.get(tf,1)
 
-async def cc_fetch_ohlcv(symbol: str, quote="USD", timeframe="1h", limit=1500) -> List[Dict[str,Any]]:
+async def cc_fetch_ohlcv(symbol: str, quote="USD", timeframe="1h", limit=1500, to_ts: Optional[int]=None) -> List[Dict[str,Any]]:
     try:
-        key=f"cc_ohlcv_{symbol}_{quote}_{timeframe}_{limit}"
-        c=cache.get(key)
-        if c: return c
         headers={}
         if S.CRYPTOCOMPARE_API_KEY:
             headers["authorization"]=f"Apikey {S.CRYPTOCOMPARE_API_KEY}"
         async with aiohttp.ClientSession(headers=headers) as session:
             params={"fsym":symbol.upper(),"tsym":quote.upper(),"limit":limit,"aggregate":cc_agg(timeframe)}
+            if to_ts is not None: params["toTs"]=to_ts
             async with session.get(f"{CC_BASE}/{cc_tf_to_path(timeframe)}",params=params,timeout=30) as resp:
                 resp.raise_for_status()
                 data=await resp.json()
@@ -396,10 +474,29 @@ async def cc_fetch_ohlcv(symbol: str, quote="USD", timeframe="1h", limit=1500) -
                 out=[]
                 for r in rows:
                     out.append({"time":r.get("time")*1000,"open":r.get("open"),"high":r.get("high"),"low":r.get("low"),"close":r.get("close"),"volume":r.get("volumefrom")})
-                cache.set(key,out); return out
+                return out
     except Exception as e:
         logger.error(f"CC OHLCV error {symbol} {timeframe}: {e}")
         return []
+
+async def cc_fetch_ohlcv_extended(symbol: str, quote="USD", timeframe="1d", total_limit=1500) -> List[Dict[str,Any]]:
+    # Fetch in pages using toTs to cover long history
+    per_call = min(2000, total_limit)
+    out: List[Dict[str,Any]]=[]
+    to_ts = None
+    while len(out) < total_limit:
+        chunk = await cc_fetch_ohlcv(symbol, quote, timeframe, limit=per_call, to_ts=to_ts)
+        if not chunk: break
+        # Avoid duplicates
+        if out and chunk and chunk[-1]["time"] == out[0]["time"]:
+            chunk = chunk[:-1]
+        out = chunk + out  # prepend older
+        if len(chunk)==0: break
+        oldest = chunk[0]["time"]//1000 - 60
+        to_ts = oldest
+        if len(out)>=total_limit: break
+        await asyncio.sleep(0.2)
+    return out[-total_limit:]
 
 # Exchanges: price, whales, orderbook walls, derivatives
 async def ex_fetch_ticker(symbol: str) -> Dict[str,Any]:
@@ -408,6 +505,8 @@ async def ex_fetch_ticker(symbol: str) -> Dict[str,Any]:
     async def run_ex(ex_id):
         try:
             ex=getattr(ccxt, ex_id)()
+            ex.enableRateLimit = True
+            ex.timeout = 10000
             for p in pairs:
                 try:
                     t=await ex.fetch_ticker(p)
@@ -428,6 +527,8 @@ async def ex_fetch_trades_whales(symbol: str, lookback_trades: int = 500, usd_th
     async def run_ex(ex_id):
         try:
             ex=getattr(ccxt, ex_id)()
+            ex.enableRateLimit = True
+            ex.timeout = 10000
             for p in pairs:
                 try:
                     trades=await ex.fetch_trades(p, limit=lookback_trades)
@@ -470,6 +571,8 @@ async def ex_fetch_orderbook_walls(symbol: str, depth: int = 50, usd_threshold: 
     async def run_ex(ex_id):
         try:
             ex=getattr(ccxt, ex_id)()
+            ex.enableRateLimit = True
+            ex.timeout = 10000
             for p in pairs:
                 try:
                     ob=await ex.fetch_order_book(p, limit=depth)
@@ -492,13 +595,13 @@ async def ex_fetch_orderbook_walls(symbol: str, depth: int = 50, usd_threshold: 
 
 async def ex_fetch_derivatives(symbol: str) -> Dict[str, Any]:
     if not S.FUNDING_ENABLED: return {}
-    # Generic attempt via ccxt (limited support)
     pairs=[f"{symbol}/USDT", f"{symbol}/USDC", f"{symbol}/USD"]
     frs=[]; ois=[]
     async def run_ex(ex_id):
         try:
             ex=getattr(ccxt, ex_id)()
-            # Funding rate
+            ex.enableRateLimit = True
+            ex.timeout = 10000
             for p in pairs:
                 try:
                     if hasattr(ex, 'fetchFundingRate'):
@@ -507,7 +610,6 @@ async def ex_fetch_derivatives(symbol: str) -> Dict[str, Any]:
                             frs.append(fr["fundingRate"]); break
                 except Exception:
                     continue
-            # Open interest (if supported)
             try:
                 if hasattr(ex, 'fetchOpenInterest'):
                     for p in pairs:
@@ -523,10 +625,7 @@ async def ex_fetch_derivatives(symbol: str) -> Dict[str, Any]:
         except Exception:
             pass
     await asyncio.gather(*[run_ex(e) for e in S.EXCHANGES])
-    return {
-        "funding_rate": float(np.nanmean(frs)) if frs else None,
-        "open_interest": float(np.nansum(ois)) if ois else None
-    }
+    return {"funding_rate": float(np.nanmean(frs)) if frs else None, "open_interest": float(np.nansum(ois)) if ois else None}
 
 # ---------------- News ----------------
 async def cryptopanic_news(query: Optional[str]=None, filter_: str="hot", limit: int=50) -> List[Dict[str,Any]]:
@@ -649,13 +748,7 @@ def ichimoku(df: pd.DataFrame) -> Dict[str, float | str]:
     above_cloud = price > cloud_top
     below_cloud = price < cloud_bottom
     cloud_state = "Bullish" if above_cloud else "Bearish" if below_cloud else "Neutral"
-    return {
-        "tenkan": float(conversion_line.iloc[-1]),
-        "kijun": float(base_line.iloc[-1]),
-        "senkou_a": float(span_a.iloc[-1]),
-        "senkou_b": float(span_b.iloc[-1]),
-        "cloud_state": cloud_state
-    }
+    return {"tenkan": float(conversion_line.iloc[-1]), "kijun": float(base_line.iloc[-1]), "senkou_a": float(span_a.iloc[-1]), "senkou_b": float(span_b.iloc[-1]), "cloud_state": cloud_state}
 
 def mfi(df: pd.DataFrame, period: int = 14) -> float:
     tp = (df['high'] + df['low'] + df['close']) / 3.0
@@ -673,14 +766,7 @@ def obv(df: pd.DataFrame) -> float:
 
 def compute_advanced_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     try:
-        return {
-            "adx": adx(df),
-            "stochastic": stochastic(df),
-            "ichimoku": ichimoku(df),
-            "mfi": mfi(df),
-            "obv": obv(df),
-            "summary": {}
-        }
+        return {"adx": adx(df), "stochastic": stochastic(df), "ichimoku": ichimoku(df), "mfi": mfi(df), "obv": obv(df), "summary": {}}
     except Exception:
         return {}
 
@@ -707,7 +793,7 @@ def detect_candlestick_patterns(df: pd.DataFrame)->Dict[str,Any]:
         patterns.append("Evening Star")
     return {"patterns":patterns}
 
-# ---------------- Elliott (ZigZag + Fibo constraints) ----------------
+# ---------------- Elliott (ZigZag + Fibo) ----------------
 def zigzag(series: pd.Series, deviation=0.05)->List[Dict[str,Any]]:
     piv=[]; last_p=series.iloc[0]; last_idx=series.index[0]; trend=0
     for i in range(1,len(series)):
@@ -737,11 +823,11 @@ def elliott_validate_and_score(pivots: List[Dict[str, Any]]) -> Dict[str, Any]:
         bear = w1<0 and w3<0 and w5<0 and w2>0 and w4>0
         if not (bull or bear): continue
         score = 0.4
-        r2 = _fib_ratio(w2, w1); 
+        r2 = _fib_ratio(w2, w1)
         if 0.3 <= r2 <= 0.8: score += 0.1
-        r3 = _fib_ratio(w3, w1); 
+        r3 = _fib_ratio(w3, w1)
         if r3 >= 1.0: score += 0.15
-        r4 = _fib_ratio(w4, w3); 
+        r4 = _fib_ratio(w4, w3)
         if 0.2 <= r4 <= 0.6: score += 0.1
         overlap = (min(seg[2], seg[3]) < max(seg[0], seg[1])) if bull else (max(seg[2], seg[3]) > min(seg[0], seg[1]))
         if not overlap: score += 0.1
@@ -838,7 +924,7 @@ def analyze_sentiment_news(news: List[Dict[str,Any]])->Dict[str,Any]:
     items=[{"title":n.get("title"),"sentiment":0.0,"source":n.get("source"),"url":n.get("url")} for n in news[:10]]
     return {"average_sentiment":avg,"items":items,"topics":topics}
 
-# ---------------- Quant / Regime / RF / Stacking / Calibration ----------------
+# ---------------- Quant / ML ----------------
 def make_features(df: pd.DataFrame)->pd.DataFrame:
     c=df["close"]; d=c.diff()
     up=d.clip(lower=0).rolling(14).mean(); dn=(-d.clip(upper=0)).rolling(14).mean()
@@ -877,14 +963,16 @@ def _optimize_thresholds(probs: np.ndarray, y: np.ndarray) -> Tuple[float,float]
                 best_score=acc; best=(buy,sell)
     return best
 
-def rf_train_predict(df: pd.DataFrame, symbol: str, tf: str)->Dict[str,Any]:
+def rf_train_predict(df: pd.DataFrame, symbol: str, tf: str, force_train: bool = False)->Dict[str,Any]:
     feat=make_features(df)
     y=(df["close"].shift(-1)>df["close"]).astype(int)
     valid=~(feat.isna().any(axis=1) | y.isna())
     X=feat[valid]; yv=y[valid].values
     if len(X)<200: return {"prob_up":0.5,"model_acc":0.5}
     path=f"rfcal_{symbol}_{tf}.joblib"
-    clf=None; best_acc=0.0; thresholds=(None,None)
+    if S.FAST_RESPONSE and (not force_train) and (not os.path.exists(path)):
+        return {"prob_up":0.55,"model_acc":0.6,"t_buy":None,"t_sell":None}
+    clf=None; best_acc=0.0; thresholds=(None,None); trained_now=False
     if os.path.exists(path):
         try:
             obj=load(path); clf=obj["clf"]; thresholds=obj.get("thr",(None,None)); best_acc=obj.get("acc",0.6)
@@ -906,10 +994,12 @@ def rf_train_predict(df: pd.DataFrame, symbol: str, tf: str)->Dict[str,Any]:
             thr=_optimize_thresholds(pv, ycat)
             if avg>ba:
                 ba=avg; best=cal; best_thr=thr
-        clf=best; best_acc=ba; dump({"clf":clf,"thr":best_thr,"acc":best_acc}, path); thresholds=best_thr
+        clf=best; best_acc=ba; dump({"clf":clf,"thr":best_thr,"acc":best_acc}, path); thresholds=best_thr; trained_now=True
     prob=float(clf.predict_proba([feat.iloc[-1].values])[0][1])
     if thresholds[0] is not None:
         db_upsert_thresholds(symbol, tf, thresholds[0], thresholds[1])
+    if trained_now or force_train:
+        db_upsert_model_registry(symbol, tf, "RFCalibrated", float(max(best_acc,0.5)))
     return {"prob_up":prob, "model_acc":float(max(best_acc,0.6)), "t_buy": thresholds[0], "t_sell": thresholds[1]}
 
 def strat_signals(df: pd.DataFrame)->Dict[str,np.ndarray]:
@@ -944,7 +1034,7 @@ def evaluate_strategies(df: pd.DataFrame, horizon: int=3)->Dict[str,Any]:
     best=max(weights, key=weights.get) if weights else "none"
     return {"metrics":metrics,"weights":weights,"best":best}
 
-def stacking_predict(df: pd.DataFrame, symbol: str, timeframe: str) -> Dict[str, Any]:
+def stacking_predict(df: pd.DataFrame, symbol: str, timeframe: str, force_train: bool = False) -> Dict[str, Any]:
     path = f"stack_{symbol}_{timeframe}.joblib"
     feat = make_features(df)
     y = (df["close"].shift(-1) > df["close"]).astype(int)
@@ -952,8 +1042,10 @@ def stacking_predict(df: pd.DataFrame, symbol: str, timeframe: str) -> Dict[str,
     X = feat[valid]; y = y[valid]
     if len(X) < 250:
         return {"prob_up": 0.5, "model_acc": 0.55}
+    if S.FAST_RESPONSE and (not force_train) and (not os.path.exists(path)):
+        return {"prob_up": 0.55, "model_acc": 0.6}
     models = None
-    best_acc = 0.0
+    best_acc = 0.0; trained_now=False
     if os.path.exists(path):
         try:
             models = load(path)
@@ -979,7 +1071,7 @@ def stacking_predict(df: pd.DataFrame, symbol: str, timeframe: str) -> Dict[str,
             if avg > best:
                 best = avg; best_models = {"rf": rf, "gbc": gbc, "lr": lr}
         models = best_models
-        dump(models, path); best_acc = best
+        dump(models, path); best_acc = best; trained_now=True
     else:
         rf = models["rf"]; gbc = models["gbc"]; lr = models["lr"]
         test_idx = -min(200, len(X)//5) if len(X) > 300 else -50
@@ -988,11 +1080,16 @@ def stacking_predict(df: pd.DataFrame, symbol: str, timeframe: str) -> Dict[str,
         best_acc = float(accuracy_score(y.iloc[test_idx:], pred))
     rf = models["rf"]; gbc = models["gbc"]; lr = models["lr"]
     prob_up = float(lr.predict_proba([[rf.predict_proba([feat.iloc[-1].values])[0][1], gbc.predict_proba([feat.iloc[-1].values])[0][1]]])[0][1])
+    if trained_now or force_train:
+        db_upsert_model_registry(symbol, timeframe, "Stacking", float(max(0.5, min(0.95, best_acc))))
     return {"prob_up": prob_up, "model_acc": float(max(0.5, min(0.95, best_acc)))}
 
-def auto_ensemble_prob(df: pd.DataFrame, symbol: str, tf: str, sentiment_value: float, regime: str, whales_bias: float, derivatives: Dict[str,Any]|None=None)->Dict[str,Any]:
-    rf = rf_train_predict(df, symbol=symbol, tf=tf)
+def auto_ensemble_prob(df: pd.DataFrame, symbol: str, tf: str, sentiment_value: float, regime: str, whales_bias: float, derivatives: Dict[str,Any]|None=None, force_train: bool = False)->Dict[str,Any]:
+    rf = rf_train_predict(df, symbol=symbol, tf=tf, force_train=force_train)
     eva=evaluate_strategies(df)
+    # persist strategies metrics
+    for name, m in eva.get("metrics",{}).items():
+        db_upsert_strat_perf(symbol, tf, name, m)
     w=eva["weights"]; sigs=strat_signals(df); last={k: int(s[-1]) if len(s)>0 else 0 for k,s in sigs.items()}
     vote=0.0
     for k,wt in w.items():
@@ -1029,11 +1126,30 @@ def backtest_strategies(df: pd.DataFrame, horizon: int = 3) -> Dict[str, Any]:
     max_dd = float(((equity - np.maximum.accumulate(equity)) / (np.maximum.accumulate(equity)+1e-9)).min())
     return {"cagr": cagr, "sharpe": sharpe, "max_dd": max_dd}
 
-# ---------------- Risk / Entry-Exit ----------------
+# ---------------- Risk / Entry-Exit + Leverage ----------------
 def kelly_fraction(prob_win: float, rr: float) -> float:
     b = max(rr, 0.1); p = max(0.0, min(1.0, prob_win))
     k = (p*(b+1) - 1) / b
     return max(0.0, min(0.25, k))
+
+def suggest_leverage(entry: float, sl: float, direction: str, maintenance_margin: float = 0.004, safety_k: float = 2.5, max_leverage: float = 10.0) -> Tuple[float, float]:
+    if not entry or not sl or entry <= 0:
+        return 1.0, None
+    # Approx liquidation distance ~ entry / L; enforce distance >= safety_k * stop distance
+    stop_dist = (entry - sl) if direction=="BUY" else (sl - entry)
+    if stop_dist <= 0:
+        return 1.0, None
+    denom = safety_k * (stop_dist/entry)
+    if denom <= 0:
+        L = 1.0
+    else:
+        L = min(max_leverage, 1.0 / denom)
+    L = float(max(1.0, min(L, max_leverage)))
+    if direction=="BUY":
+        liq = entry * (1 - 1.0/L)
+    else:
+        liq = entry * (1 + 1.0/L)
+    return L, float(liq)
 
 def risk_management_calc(df: pd.DataFrame, price: float, balance: float, risk_per_trade: float, prob_up: float = 0.55, rr_hint: float = 1.5)->Dict[str,Any]:
     a=atr(df); atrv=float(a.iloc[-1]) if len(a) else 0.0
@@ -1046,7 +1162,8 @@ def risk_management_calc(df: pd.DataFrame, price: float, balance: float, risk_pe
     k_units = k * (balance / max(price,1e-9))
     units = max(units, k_units)
     rr_out = (tp2 - price) / max(price - sl, 1e-9) if price>sl else 0.0
-    return {"atr": atrv,"stop_loss": float(sl),"take_profit_1": float(tp1),"take_profit_2": float(tp2),"take_profit_3": float(tp3),"units": float(units),"risk_reward_ratio": float(rr_out),"kelly": float(k)}
+    lev, liq = suggest_leverage(price, sl, "BUY" if rr_out>=0 else "SELL")
+    return {"atr": atrv,"stop_loss": float(sl),"take_profit_1": float(tp1),"take_profit_2": float(tp2),"take_profit_3": float(tp3),"units": float(units),"risk_reward_ratio": float(rr_out),"kelly": float(k),"leverage": float(lev),"liq_price": liq}
 
 def trailing_stop(price: float, atr_value: float, direction: str) -> float:
     if atr_value <= 0:
@@ -1175,14 +1292,13 @@ def format_analysis(analysis: Dict[str,Any])->str:
     out.append("")
     if risk:
         out.append("⚠️ مدیریت ریسک:")
-        out.append(f"  • ATR: {fmt_num(risk.get('atr'),4)} | Kelly: {risk.get('kelly',0):.2f}")
+        out.append(f"  • ATR: {fmt_num(risk.get('atr'),4)} | Kelly: {risk.get('kelly',0):.2f} | Lev: x{fmt_num(risk.get('leverage',1),2)} | Liq≈ {fmt_num(risk.get('liq_price'))}")
         out.append(f"  • حد ضرر: ${fmt_num(risk.get('stop_loss'))}")
         out.append(f"  • حد سودها: TP1 ${fmt_num(risk.get('take_profit_1'))} | TP2 ${fmt_num(risk.get('take_profit_2'))} | TP3 ${fmt_num(risk.get('take_profit_3'))}")
         out.append(f"  • حجم پیشنهادی: {fmt_num(risk.get('units'),4)} واحد | R/R: {risk.get('risk_reward_ratio',0):.2f}")
     if entry:
         out.append("🎯 برنامه ورود/خروج:")
         out.append(f"  • ورود: ${fmt_num(entry.get('entry'))} | TP Hint: {fmt_num(entry.get('tp_hint'))} | Trailing: ${fmt_num(entry.get('trailing'))}")
-
     reasons=[]
     if tech and tech.get("ema",{}).get("trend")=="Bullish": reasons.append("روند کلی صعودی")
     if sent and sent.get("average_sentiment",0)>0.2: reasons.append("خبرها نسبتاً مثبت")
@@ -1190,9 +1306,9 @@ def format_analysis(analysis: Dict[str,Any])->str:
     if quant and quant.get("regime")=="bull": reasons.append("رژیم بازار صعودی")
     if deriv and deriv.get("funding_rate") and deriv.get("funding_rate")>0: reasons.append("فاندینگ مثبت (لانگ‌ها غالب)")
     out.append("\n🧠 خلاصه هوشمند: " + ("، ".join(reasons) if reasons else "سیگنال بر اساس ترکیب مدل‌های تکنیکال/کوانت/احساسات"))
-
     sources=md.get("sources",[])
     if sources: out.append(f"\n🔗 منابع داده: {', '.join(sources)}")
+    out.append("\n⚠️ هشدار: استفاده از اهرم ریسک بالایی دارد. این توصیه مالی نیست.")
     return "\n".join(out)
 
 # ---------------- Data Fetcher ----------------
@@ -1211,16 +1327,15 @@ class DataFetcher:
             return o
         o1=gen(1200,3600); o4=o1[::4]; od=o1[::24]
         return {"market_data":{"symbol":symbol.upper(),"price":price,"price_change_24h":random.uniform(-5,5),"volume_24h":random.uniform(1e5,1e7),"market_cap":random.uniform(1e7,1e10),"sources":["OFFLINE"]},"ohlcv":{"1h":o1,"4h":o4,"1d":od},"news":[],"whales":{"bias":0.0,"flows_by_exchange":{}},"orderbook_walls":{"bids":[],"asks":[]},"derivatives":{},"sources":["OFFLINE"]}
-    async def fetch_bundle(self, symbol: str)->Dict[str,Any]:
+    async def fetch_bundle(self, symbol: str, fast: Optional[bool]=None)->Dict[str,Any]:
         if self.offline: return self.offline_bundle(symbol)
-        key=f"bundle_{symbol}"
+        fast_flag = S.FAST_RESPONSE if fast is None else fast
+        key=f"bundle_{symbol}_{'fast' if fast_flag else 'full'}"
         c=cache.get(key)
         if c: return c
-        logger.info(f"Fetching data for {symbol}")
+        logger.info(f"Fetching data for {symbol} (fast={fast_flag})")
+        # Market data
         m_tasks=[cg_fetch_market_by_symbol(symbol), cmc_fetch_quote(symbol), ex_fetch_ticker(symbol)]
-        o_tasks=[cc_fetch_ohlcv(symbol,"USD",tf,limit=S.MODEL_MAX_TRAIN_BARS) for tf in S.TIMEFRAMES]
-        n_tasks=[cryptopanic_news(symbol), newsapi_general(f"{symbol} crypto")]
-        w_tasks=[ex_fetch_trades_whales(symbol), ex_fetch_orderbook_walls(symbol), ex_fetch_derivatives(symbol)]
         results=await asyncio.gather(*m_tasks, return_exceptions=True)
         cg, cmc, ex = (r if isinstance(r,dict) else {} for r in results)
         cands=[x for x in [cg, cmc, ex] if x]
@@ -1234,15 +1349,34 @@ class DataFetcher:
         src=[]
         for x in cands: src+=x.get("sources",[])
         market_data={"symbol":symbol.upper(),"price":price,"price_change_24h":(cg or cmc or {}).get("price_change_24h"),"volume_24h":vol,"market_cap":mcap,"sources":list(dict.fromkeys(src))}
+        # OHLCV
+        ohlcv_limit = S.FAST_FETCH_OHLCV_LIMIT if fast_flag else S.MODEL_MAX_TRAIN_BARS
+        o_tasks=[cc_fetch_ohlcv(symbol,"USD",tf,limit=ohlcv_limit) for tf in S.TIMEFRAMES]
         ohlcv_res=await asyncio.gather(*o_tasks, return_exceptions=True)
         ohlcv={tf:(d if isinstance(d,list) else []) for tf,d in zip(S.TIMEFRAMES, ohlcv_res)}
+        # News with timeout
         news=[]
-        for nr in (await asyncio.gather(*n_tasks, return_exceptions=True)):
-            if isinstance(nr,list): news+=nr
-        whales, walls, deriv = await asyncio.gather(*w_tasks, return_exceptions=True)
-        whales = whales if isinstance(whales, dict) else {}
-        walls = walls if isinstance(walls, dict) else {}
-        deriv = deriv if isinstance(deriv, dict) else {}
+        try:
+            x=await asyncio.wait_for(cryptopanic_news(symbol), timeout=5 if fast_flag else 15)
+            if isinstance(x,list): news+=x
+        except Exception: pass
+        try:
+            x=await asyncio.wait_for(newsapi_general(f"{symbol} crypto"), timeout=5 if fast_flag else 15)
+            if isinstance(x,list): news+=x
+        except Exception: pass
+        # Whales/Walls/Derivatives with timeout
+        t_whales = asyncio.create_task(ex_fetch_trades_whales(symbol, lookback_trades=(300 if fast_flag else 500)))
+        t_walls  = asyncio.create_task(ex_fetch_orderbook_walls(symbol))
+        t_deriv  = asyncio.create_task(ex_fetch_derivatives(symbol))
+        try:
+            whales = await asyncio.wait_for(t_whales, timeout=S.FAST_WHALES_TIMEOUT_SEC if fast_flag else 20)
+        except Exception: whales = {}
+        try:
+            walls = await asyncio.wait_for(t_walls, timeout=S.FAST_ORDERBOOK_TIMEOUT_SEC if fast_flag else 20)
+        except Exception: walls = {}
+        try:
+            deriv = await asyncio.wait_for(t_deriv, timeout=S.FAST_DERIV_TIMEOUT_SEC if fast_flag else 20)
+        except Exception: deriv = {}
         bundle={"market_data":market_data,"ohlcv":ohlcv,"news":news,"whales":whales,"orderbook_walls":walls,"derivatives":deriv,"sources":market_data.get("sources",[])}
         if not price and not any(len(v) for v in ohlcv.values()):
             logger.warning(f"No live data for {symbol}, using offline"); bundle=self.offline_bundle(symbol)
@@ -1259,8 +1393,22 @@ def to_df(ohlcv: List[Dict[str,Any]])->pd.DataFrame:
 class CryptoBotAI:
     def __init__(self):
         self.fetcher=DataFetcher()
-    async def analyze_symbol(self, symbol: str)->Dict[str,Any]:
-        bundle=await self.fetcher.fetch_bundle(symbol)
+        self._train_busy=set()
+    async def train_models_bg(self, symbol: str, tf: str, df: pd.DataFrame):
+        key=(symbol, tf)
+        if key in self._train_busy: return
+        self._train_busy.add(key)
+        try:
+            await asyncio.to_thread(lambda: rf_train_predict(df, symbol=symbol, tf=tf, force_train=True))
+            await asyncio.to_thread(lambda: stacking_predict(df, symbol=symbol, timeframe=tf, force_train=True))
+        except Exception as e:
+            logger.error(f"train_models_bg {symbol} {tf} err: {e}")
+        finally:
+            if key in self._train_busy: self._train_busy.remove(key)
+
+    async def analyze_symbol(self, symbol: str, fast: Optional[bool]=None, force_train: bool=False)->Dict[str,Any]:
+        fast_flag = S.FAST_RESPONSE if fast is None else fast
+        bundle=await self.fetcher.fetch_bundle(symbol, fast=fast_flag)
         md=bundle.get("market_data",{})
         ohlcv=bundle.get("ohlcv",{})
         news=bundle.get("news",[])
@@ -1282,9 +1430,19 @@ class CryptoBotAI:
             ms=detect_order_blocks(df)
             ses=analyze_sessions(df) if tf=="1h" else {}
 
+            rf_path=f"rfcal_{symbol.upper()}_{tf}.joblib"
+            stk_path=f"stack_{symbol.upper()}_{tf}.joblib"
+            need_bg = fast_flag and (not os.path.exists(rf_path) or not os.path.exists(stk_path))
+            if need_bg:
+                asyncio.create_task(self.train_models_bg(symbol.upper(), tf, df))
             reg=regime_detection(df)
-            ae=auto_ensemble_prob(df, symbol=symbol.upper(), tf=tf, sentiment_value=sentiment.get("average_sentiment",0.0), regime=reg.get("regime","unknown"), whales_bias=whales.get("bias",0.0), derivatives=derivatives)
-            stk=stacking_predict(df, symbol=symbol.upper(), timeframe=tf)
+            ae=auto_ensemble_prob(df, symbol=symbol.upper(), tf=tf,
+                                  sentiment_value=sentiment.get("average_sentiment",0.0),
+                                  regime=reg.get("regime","unknown"),
+                                  whales_bias=whales.get("bias",0.0),
+                                  derivatives=derivatives,
+                                  force_train=force_train)
+            stk=stacking_predict(df, symbol=symbol.upper(), timeframe=tf, force_train=force_train)
             ae["prob_up"]=float(max(0.0,min(1.0, 0.6*ae["prob_up"]+0.4*stk["prob_up"])))
             ae["model_acc"]=float(max(ae["model_acc"], stk["model_acc"]))
 
@@ -1309,14 +1467,10 @@ class CryptoBotAI:
         else:
             final_prob=0.5; final_acc=0.6
 
-        df4=tf_results.get("4h",{}).get("df", pd.DataFrame())
-        reg_over=regime_detection(df4) if not df4.empty else {"regime":"unknown","confidence":0.0}
-        quant_final={"prob_up":final_prob,"model_acc":final_acc,"regime":reg_over.get("regime","unknown"),"regime_conf":reg_over.get("confidence",0.0),"parts":{tf:ae for tf,ae in parts},"strategies":(tf_results.get("4h",{}).get("quant",{}).get("strategies",{}) if tf_results else {})}
-
         df_base = tf_results.get("1d",{}).get("df") or tf_results.get("4h",{}).get("df") or pd.DataFrame()
         risk={}
         if not df_base.empty and md.get("price"):
-            risk=risk_management_calc(df_base, float(md["price"]), S.BALANCE, S.RISK_PER_TRADE, prob_up=quant_final["prob_up"], rr_hint=1.8)
+            risk=risk_management_calc(df_base, float(md["price"]), S.BALANCE, S.RISK_PER_TRADE, prob_up=final_prob, rr_hint=1.8)
 
         direction=map_score_to_signal(final_prob, final_acc)
         entry_plan={}
@@ -1327,7 +1481,7 @@ class CryptoBotAI:
         if whales and whales.get("flows_by_exchange"):
             try:
                 total=float(whales.get("total_notional",0)); bias=float(whales.get("bias",0))
-                if total>5e6 and abs(bias)>0.4:
+                if total>S.WHALE_ALERT_NOTIONAL and abs(bias)>S.WHALE_ALERT_BIAS:
                     flows=whales.get("flows_by_exchange",{})
                     best_ex=None; best_val=0.0
                     for ex, fv in flows.items():
@@ -1338,11 +1492,14 @@ class CryptoBotAI:
             except Exception as e:
                 logger.error(f"log whale event err: {e}")
 
+        # Prepare final pack
+        quant_final={"prob_up":final_prob,"model_acc":final_acc,"regime":regime_detection(tf_results.get("4h",{}).get("df", pd.DataFrame()) or df_base).get("regime","unknown"),"regime_conf":regime_detection(tf_results.get("4h",{}).get("df", pd.DataFrame()) or df_base).get("confidence",0.0),"parts":{tf:ae for tf,ae in parts},"strategies":(tf_results.get("4h",{}).get("quant",{}).get("strategies",{}) if tf_results else {})}
         analysis={"symbol":symbol.upper(),"market_data":md,"technical":tech_final,"technical_advanced":techx_final,"elliott":ell_final,"market_structure":ms_final,"sentiment":sentiment,"sessions":ses_final,"quant":quant_final,"risk_management":risk,"timeframes":{tf:{k:v for k,v in tf_results[tf].items() if k!='df'} for tf in tf_results},"whales":whales,"orderbook_walls":walls,"derivatives":derivatives}
         analysis["signal"]=direction; analysis["confidence"]=final_prob; analysis["entry_plan"]=entry_plan
         return analysis
 
-    async def get_trading_signals(self)->List[Dict[str,Any]]:
+    async def get_trading_signals(self, fast: Optional[bool]=None)->List[Dict[str,Any]]:
+        fast_flag = S.FAST_RESPONSE if fast is None else fast
         universe=await discover_universe()
         symbols=[c["symbol"] for c in universe]
         if S.MONITOR_TOPN and len(symbols)>S.MONITOR_TOPN:
@@ -1352,7 +1509,7 @@ class CryptoBotAI:
         async def run(sym):
             async with sem:
                 try:
-                    a=await self.analyze_symbol(sym)
+                    a=await self.analyze_symbol(sym, fast=fast_flag, force_train=False)
                     out.append({"symbol":sym,"signal":a.get("signal","HOLD"),"confidence":a.get("confidence",0.5), "price": a.get("market_data",{}).get("price")})
                 except Exception as e:
                     logger.error(f"Signal error {sym}: {e}")
@@ -1415,7 +1572,7 @@ async def evaluate_whales_async(horizon_hours: int = None):
         db_set_whale_event_evaluated(id_, float(ret))
         db_update_whale_perf(ex, sym, float(ret))
 
-# ---------------- Realtime Monitor (fast polling) ----------------
+# ---------------- Realtime Monitor ----------------
 async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
     app = context.application
     if not app.bot_data.get("monitor_enabled", S.ENABLE_MONITOR):
@@ -1468,7 +1625,7 @@ async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"monitor job error: {e}")
 
-# ---------------- WebSocket (Coinbase Ticker) ----------------
+# ---------------- WebSocket (Coinbase) ----------------
 class WSManager:
     def __init__(self, app):
         self.app = app
@@ -1479,7 +1636,7 @@ class WSManager:
 
     async def _ws_coinbase(self, symbols: List[str]):
         url = "wss://ws-feed.exchange.coinbase.com"
-        product_ids = [f"{s}-USD" for s in symbols[:100]]
+        product_ids = [f"{s}-USD" for s in symbols[:100}]
         msg_sub = {"type":"subscribe","channels":[{"name":"ticker","product_ids": product_ids}]}
         while self.running:
             try:
@@ -1490,20 +1647,16 @@ class WSManager:
                         raw = await ws.recv()
                         data = _json.loads(raw)
                         if data.get("type")=="ticker" and data.get("product_id"):
-                            pid = data["product_id"]
-                            sym = pid.split("-")[0]
+                            pid = data["product_id"]; sym = pid.split("-")[0]
                             await self.queue.put(sym)
             except Exception as e:
-                logger.error(f"WS coinbase error: {e}")
-                await asyncio.sleep(5)
-                continue
+                logger.error(f"WS coinbase error: {e}"); await asyncio.sleep(5); continue
 
     async def consumer(self, bot_instance: 'CryptoBotAI'):
         while self.running:
             subs = db_get_subscribers()
             if not subs:
-                await asyncio.sleep(5)
-                continue
+                await asyncio.sleep(5); continue
             sym = await self.queue.get()
             now=int(time.time())
             last_alert = db_get_last_alert(sym) or 0
@@ -1545,7 +1698,7 @@ class WSManager:
             self.ws_task=None
         logger.info("WS Manager stopped.")
 
-# ---------------- HTTP Dashboard (aiohttp) ----------------
+# ---------------- HTTP Dashboard ----------------
 async def http_app_factory():
     async def health(request):
         return web.json_response({"status":"ok","time": int(time.time())})
@@ -1611,6 +1764,8 @@ def build_help() -> str:
     "• /signals — برترین سیگنال‌های بازار\n"
     "• /subscribe | /unsubscribe — دریافت خودکار\n"
     "• /autosignals on [minutes] [topN] | /autosignals off — ارسال دوره‌ای\n"
+    "• /opportunities [topN] — آخرین فرصت‌های پژوهش خودکار\n"
+    "• /autopilot on [minutes] [topN] | /autopilot off — اسکن 24/7 کل بازار\n"
     "• /report [hours] — گزارش عملکرد سیگنال‌ها\n"
     "• /watchadd SYMBOL | /watchrm SYMBOL | /watchlist — واچ‌لیست\n"
     "• /backtest SYMBOL [tf] [horizon] — بک‌تست\n"
@@ -1619,17 +1774,134 @@ def build_help() -> str:
     "داشبورد HTTP: /health, /stats, /best-whales, /signals/recent, /watchlist\n"
     )
 
+async def typing_loop(bot, chat_id: int, stop_event: asyncio.Event, interval: int = 4):
+    while not stop_event.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING if ChatAction else "typing")
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+
 async def run_cli():
     bot=CryptoBotAI()
-    analysis=await bot.analyze_symbol(S.SYMBOL)
+    analysis=await bot.analyze_symbol(S.SYMBOL, fast=S.FAST_RESPONSE, force_train=False)
     print(format_analysis(analysis))
     if S.PRINT_SIGNALS:
-        sigs=await bot.get_trading_signals()
+        sigs=await bot.get_trading_signals(fast=S.FAST_RESPONSE)
         top=sorted(sigs, key=lambda x: x["confidence"], reverse=True)[:10]
         print("\n🔥 برترین سیگنال‌ها:")
         for s in top:
             print(f"  • {s['symbol']}: {s['signal']} ({s['confidence']:.1%})")
 
+# ---------------- Research / Autoscan / Whales / News Jobs ----------------
+async def autoscan_job(context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    if not app.bot_data.get("autopilot_enabled", S.ENABLE_AUTOSCAN):
+        return
+    bot_instance: CryptoBotAI = app.bot_data.get("bot_instance")
+    if not bot_instance: return
+    try:
+        uni = app.bot_data.get("universe")
+        if not uni:
+            u = await discover_universe(); uni=[c["symbol"] for c in u]
+            app.bot_data["universe"]=uni
+        topn = int(app.bot_data.get("research_topn", S.RESEARCH_TOPN))
+        symbols = uni[:topn]
+        sem=asyncio.Semaphore(4)
+        results=[]
+        async def run(sym):
+            async with sem:
+                try:
+                    # Deep history if needed for future extensions
+                    # df1d = to_df(await cc_fetch_ohlcv_extended(sym, "USD", "1d", total_limit=S.DEEP_HISTORY_LIMIT_1D)) # optional
+                    a = await bot_instance.analyze_symbol(sym, fast=False, force_train=True)
+                    results.append((sym, a))
+                except Exception as e:
+                    logger.error(f"autoscan {sym} err: {e}")
+        await asyncio.gather(*[run(s) for s in symbols])
+        if not results: return
+        # Rank by confidence and RR
+        ranked = []
+        for sym, a in results:
+            prob = a.get("quant",{}).get("prob_up",0.5)
+            rr = a.get("risk_management",{}).get("risk_reward_ratio",0.0)
+            ranked.append((sym, prob, rr, a))
+        ranked.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        picks = ranked[:min(10, len(ranked))]
+        subs = db_get_subscribers()
+        ts=int(time.time())
+        lines=["🧪 فرصت‌های پژوهش خودکار:"]
+        for sym, prob, rr, a in picks:
+            r=a.get("risk_management",{})
+            md=a.get("market_data",{})
+            entry=a.get("entry_plan",{}).get("entry", md.get("price"))
+            lev=r.get("leverage",1.0)
+            db_insert_research_opp(ts, sym, "mix", a.get("signal","HOLD"), float(prob), float(rr),
+                                   float(entry) if entry else 0.0, float(r.get("stop_loss") or 0.0),
+                                   float(r.get("take_profit_1") or 0.0), float(r.get("take_profit_2") or 0.0),
+                                   float(lev), notes="autoscan")
+            lines.append(f"• {sym}: {a.get('signal','HOLD')} | P={prob:.2f} | R/R={rr:.2f} | Lev x{lev:.1f}")
+        msg="\n".join(lines)
+        for chat_id in subs:
+            await app.bot.send_message(chat_id=chat_id, text=msg)
+    except Exception as e:
+        logger.error(f"autoscan job error: {e}")
+
+async def whale_watch_job(context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    bot_instance: CryptoBotAI = app.bot_data.get("bot_instance")
+    if not bot_instance: return
+    try:
+        uni = app.bot_data.get("universe")
+        if not uni:
+            u = await discover_universe(); uni=[c["symbol"] for c in u]
+            app.bot_data["universe"]=uni
+        symbols = uni[:S.WHALE_WATCH_TOPN]
+        sem=asyncio.Semaphore(6)
+        alerts=[]
+        async def run(sym):
+            async with sem:
+                w = await ex_fetch_trades_whales(sym, lookback_trades=400, usd_threshold=S.WHALE_ALERT_NOTIONAL/10)
+                if w and w.get("total_notional",0)>S.WHALE_ALERT_NOTIONAL and abs(w.get("bias",0))>S.WHALE_ALERT_BIAS:
+                    side="BUY" if w["bias"]>0 else "SELL"
+                    db_log_whale_event(int(time.time()), "multi", sym, float(w["bias"]), float(w["total_notional"]))
+                    alerts.append((sym, side, w))
+        await asyncio.gather(*[run(s) for s in symbols])
+        if alerts:
+            subs=db_get_subscribers()
+            for sym, side, w in alerts:
+                flows=w.get("flows_by_exchange",{})
+                flows_line=" | ".join([f"{ex}: B${fmt_num(v['buy'],0)}/S${fmt_num(v['sell'],0)}" for ex,v in list(flows.items())[:4]])
+                text=f"🐋 نهنگ‌ها ({side}) روی {sym}: Bias={w['bias']:+.2f} | Notional=${fmt_num(w['total_notional'],0)}\n{flows_line}"
+                for chat_id in subs:
+                    await app.bot.send_message(chat_id=chat_id, text=text)
+    except Exception as e:
+        logger.error(f"whale_watch job error: {e}")
+
+async def news_digest_job(context: ContextTypes.DEFAULT_TYPE):
+    app = context.application
+    try:
+        wl = db_get_watchlist()
+        if not wl:
+            uni = await discover_universe(); wl=[c["symbol"] for c in uni[:10]]
+        items=[]
+        for s in wl[:10]:
+            try:
+                n = await cryptopanic_news(s, filter_="hot", limit=10)
+                items += [{"symbol": s, "title": i.get("title"), "url": i.get("url"), "src": i.get("source")} for i in n[:3]]
+            except Exception: pass
+        if items:
+            subs=db_get_subscribers()
+            lines=["📰 خلاصه خبرهای داغ:"]
+            for it in items[:20]:
+                lines.append(f"• [{it['symbol']}] {it['title']} ({it['src']})")
+            msg="\n".join(lines)
+            for chat_id in subs:
+                await app.bot.send_message(chat_id=chat_id, text=msg)
+    except Exception as e:
+        logger.error(f"news_digest job error: {e}")
+
+# ---------------- Telegram Commands ----------------
 def run_telegram():
     if not TELEGRAM_AVAILABLE or not S.TELEGRAM_BOT_TOKEN:
         logger.error("Telegram not available or TELEGRAM_BOT_TOKEN missing. Running CLI + HTTP.")
@@ -1666,31 +1938,54 @@ def run_telegram():
             if not context.args:
                 await update.message.reply_text("نمونه: /analyze BTC"); return
             symbol = context.args[0].upper()
-            await update.message.reply_text(f"⏳ در حال تحلیل {symbol} ...")
-            analysis = await bot.analyze_symbol(symbol)
-            md=analysis.get("market_data",{}); price=md.get("price")
-            db_log_signal(int(time.time()), symbol, analysis.get("signal","HOLD"), float(analysis.get("confidence",0.5)), float(price) if price else None, "manual")
-            text = format_analysis(analysis)
-            for part in split_message(text): await update.message.reply_text(part)
+            ack = await update.message.reply_text(f"🟡 درخواست شما ثبت شد. در حال پردازش {symbol} با حداکثر دقت...")
+            chat_id = update.effective_chat.id
+            stop_event = asyncio.Event()
+            asyncio.create_task(typing_loop(context.bot, chat_id, stop_event))
+            async def do_work():
+                try:
+                    analysis = await bot.analyze_symbol(symbol, fast=False, force_train=True)
+                    md=analysis.get("market_data",{}); price=md.get("price")
+                    db_log_signal(int(time.time()), symbol, analysis.get("signal","HOLD"), float(analysis.get("confidence",0.5)), float(price) if price else None, "manual")
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text=f"✅ نتیجه آماده شد: {symbol}")
+                    text = format_analysis(analysis)
+                    for part in split_message(text): await context.bot.send_message(chat_id=chat_id, text=part)
+                except Exception as e:
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text=f"⛔️ خطا در تحلیل {symbol}: {e}")
+                finally:
+                    stop_event.set()
+            asyncio.create_task(do_work())
         except Exception as e:
             logger.error(f"/analyze error: {e}"); await update.message.reply_text(f"خطا در تحلیل: {e}")
 
     async def cmd_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            await update.message.reply_text("⏳ در حال تولید سیگنال‌ها ...")
-            signals = await bot.get_trading_signals()
-            if not signals:
-                await update.message.reply_text("سیگنالی در دسترس نیست."); return
-            top = sorted(signals, key=lambda x: x["confidence"], reverse=True)[:20]
-            lines = ["🔥 برترین سیگنال‌ها:"]
-            for s in top:
-                analysis = await bot.analyze_symbol(s["symbol"])
-                price = analysis.get("market_data",{}).get("price")
-                price_str = fmt_num(price, 4)
-                conf = analysis.get("confidence", 0.5)
-                lines.append(f"• {s['symbol']}: {analysis.get('signal','HOLD')} ({conf:.1%}) | قیمت: {price_str}")
-                db_log_signal(int(time.time()), s["symbol"], analysis.get("signal","HOLD"), float(conf), float(price) if price else None, "manual")
-            for part in split_message("\n".join(lines)): await update.message.reply_text(part)
+            ack = await update.message.reply_text("🟡 درخواست شما ثبت شد. در حال تولید سیگنال‌ها با دقت بالا...")
+            chat_id = update.effective_chat.id
+            stop_event = asyncio.Event()
+            asyncio.create_task(typing_loop(context.bot, chat_id, stop_event))
+            async def do_work():
+                try:
+                    quick = await bot.get_trading_signals(fast=True)
+                    if not quick:
+                        await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text="⛔️ سیگنالی در دسترس نیست."); stop_event.set(); return
+                    top = sorted(quick, key=lambda x: x["confidence"], reverse=True)[:20]
+                    lines = ["🔥 برترین سیگنال‌ها:"]
+                    for s in top:
+                        analysis = await bot.analyze_symbol(s["symbol"], fast=False, force_train=True)
+                        price = analysis.get("market_data",{}).get("price")
+                        price_str = fmt_num(price, 4)
+                        conf = analysis.get("confidence", 0.5)
+                        lines.append(f"• {s['symbol']}: {analysis.get('signal','HOLD')} ({conf:.1%}) | قیمت: {price_str}")
+                        db_log_signal(int(time.time()), s["symbol"], analysis.get("signal","HOLD"), float(conf), float(price) if price else None, "manual")
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text="✅ سیگنال‌ها آماده شدند.")
+                    for part in split_message("\n".join(lines)): await context.bot.send_message(chat_id=chat_id, text=part)
+                    await context.bot.send_message(chat_id=chat_id, text="ℹ️ برای جزئیات هر نماد: /analyze SYMBOL")
+                except Exception as e:
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text=f"⛔️ خطا در دریافت سیگنال‌ها: {e}")
+                finally:
+                    stop_event.set()
+            asyncio.create_task(do_work())
         except Exception as e:
             logger.error(f"/signals error: {e}"); await update.message.reply_text(f"خطا در دریافت سیگنال‌ها: {e}")
 
@@ -1726,11 +2021,24 @@ def run_telegram():
         try:
             if not context.args: await update.message.reply_text("نمونه: /backtest BTC 4h 3"); return
             sym = context.args[0].upper(); tf = context.args[1] if len(context.args) > 1 else "4h"; horizon = int(context.args[2]) if len(context.args) > 2 else 3
-            await update.message.reply_text(f"⏳ بک‌تست {sym} ({tf}) ...")
-            bundle = await bot.fetcher.fetch_bundle(sym); df = to_df(bundle.get("ohlcv",{}).get(tf, []))
-            if df.empty: await update.message.reply_text("⛔️ داده کافی نیست."); return
-            bt = backtest_strategies(df, horizon=horizon)
-            await update.message.reply_text(f"🧪 نتیجه بک‌تست {sym} ({tf}):\nSharpe {bt['sharpe']:+.2f} | CAGR {bt['cagr']:+.2f}% | MaxDD {bt['max_dd']:.2f}")
+            ack = await update.message.reply_text(f"🟡 بک‌تست {sym} ({tf}) ثبت شد؛ با دقت بالا محاسبه می‌شود...")
+            chat_id = update.effective_chat.id
+            stop_event = asyncio.Event()
+            asyncio.create_task(typing_loop(context.bot, chat_id, stop_event))
+            async def do_work():
+                try:
+                    bundle = await bot.fetcher.fetch_bundle(sym, fast=False)
+                    df = to_df(bundle.get("ohlcv",{}).get(tf, []))
+                    if df.empty:
+                        await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text="⛔️ داده کافی نیست."); return
+                    bt = backtest_strategies(df, horizon=horizon)
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text=f"✅ بک‌تست آماده شد.")
+                    await context.bot.send_message(chat_id=chat_id, text=f"🧪 نتیجه بک‌تست {sym} ({tf}):\nSharpe {bt['sharpe']:+.2f} | CAGR {bt['cagr']:+.2f}% | MaxDD {bt['max_dd']:.2f}")
+                except Exception as e:
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=ack.message_id, text=f"⛔️ خطا: {e}")
+                finally:
+                    stop_event.set()
+            asyncio.create_task(do_work())
         except Exception as e:
             await update.message.reply_text(f"خطا: {e}")
 
@@ -1741,6 +2049,16 @@ def run_telegram():
         lines += [f"- {r['exchange']}/{r['symbol']}: Hit {r['hit_rate']:.2f} | AvgRet {r['avg_ret']:+.4f} | n={r['count']}" for r in rows]
         await update.message.reply_text("\n".join(lines))
 
+    async def cmd_opportunities(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        topn = int(context.args[0]) if context.args else 10
+        rows = db_recent_opportunities(limit=topn)
+        if not rows:
+            await update.message.reply_text("فرصت پژوهشی ثبت‌شده‌ای وجود ندارد."); return
+        lines=["🧪 آخرین فرصت‌های پژوهش:"]
+        for r in rows:
+            lines.append(f"• {r['symbol']} ({r['timeframe']}): {r['signal']} | P={r['prob']:.2f} | R/R={r['rr']:.2f} | Lev x{r['leverage']:.1f}")
+        for part in split_message("\n".join(lines)): await update.message.reply_text(part)
+
     STATE = {
         "autosignals": S.ENABLE_AUTOSIGNALS,
         "interval": S.AUTO_SIGNAL_INTERVAL_MINUTES,
@@ -1748,6 +2066,8 @@ def run_telegram():
         "monitor": S.ENABLE_MONITOR,
         "monitor_interval": S.MONITOR_INTERVAL_SEC,
         "monitor_topn": S.MONITOR_TOPN,
+        "autopilot": S.ENABLE_AUTOSCAN,
+        "research_topn": S.RESEARCH_TOPN
     }
 
     async def autosignals_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1789,14 +2109,37 @@ def run_telegram():
             text += "\n🐋 بهترین نهنگ‌ها:\n" + "\n".join([f"- {r['exchange']}/{r['symbol']}: Hit {r['hit_rate']:.2f} | AvgRet {r['avg_ret']:+.4f} | n={r['count']}" for r in rows])
         for chat_id in subs: await app.bot.send_message(chat_id=chat_id, text=text)
 
+    async def warmup_job(context: ContextTypes.DEFAULT_TYPE):
+        if not S.MODEL_WARMUP_ON_START: return
+        app = context.application
+        bot_instance: CryptoBotAI = app.bot_data.get("bot_instance")
+        try:
+            uni = await discover_universe()
+            syms = [c["symbol"] for c in uni][:S.MODEL_WARMUP_TOPN]
+            sem = asyncio.Semaphore(3)
+            async def run(sym):
+                async with sem:
+                    try:
+                        bundle = await bot_instance.fetcher.fetch_bundle(sym, fast=True)
+                        for tf in S.TIMEFRAMES:
+                            df = to_df(bundle.get("ohlcv",{}).get(tf, []))
+                            if not df.empty:
+                                await bot_instance.train_models_bg(sym, tf, df)
+                    except Exception as e:
+                        logger.error(f"warmup {sym} err: {e}")
+            await asyncio.gather(*[run(s) for s in syms])
+            logger.info("Model warmup done.")
+        except Exception as e:
+            logger.error(f"warmup job err: {e}")
+
     async def schedule_jobs(app, bot_instance: CryptoBotAI):
         app.bot_data["bot_instance"]=bot_instance
         app.bot_data["monitor_enabled"] = STATE.get("monitor", S.ENABLE_MONITOR)
         app.bot_data["monitor_topn"] = STATE.get("monitor_topn", S.MONITOR_TOPN)
-        # HTTP dashboard
+        app.bot_data["autopilot_enabled"] = STATE.get("autopilot", S.ENABLE_AUTOSCAN)
+        app.bot_data["research_topn"] = STATE.get("research_topn", S.RESEARCH_TOPN)
         if S.ENABLE_HTTP:
             asyncio.create_task(start_http_server())
-        # WS start
         wsman.app = app
         try:
             uni = await discover_universe()
@@ -1804,23 +2147,25 @@ def run_telegram():
             await wsman.start(bot_instance, syms)
         except Exception as e:
             logger.error(f"WS start error: {e}")
-        # autosignals
         app.job_queue.run_repeating(autosignals_job, interval=STATE.get("interval",60)*60, first=10, name="autosignals")
-        # daily report
         if S.ENABLE_DAILY_REPORT:
             now = datetime.datetime.utcnow()
             target = now.replace(hour=S.DAILY_REPORT_UTC_HOUR, minute=0, second=0, microsecond=0)
             if target <= now: target = target + datetime.timedelta(days=1)
             delay = (target - now).total_seconds()
             app.job_queue.run_repeating(daily_report_job, interval=24*3600, first=delay, name="dailyreport")
-        # monitor
         if app.bot_data["monitor_enabled"]:
             app.job_queue.run_repeating(monitor_job, interval=STATE.get("monitor_interval", S.MONITOR_INTERVAL_SEC), first=30, name="monitor")
+        # research/autoscan/whales/news
+        app.job_queue.run_repeating(autoscan_job, interval=S.AUTOSCAN_INTERVAL_MINUTES*60, first=20, name="autoscan")
+        app.job_queue.run_repeating(whale_watch_job, interval=S.WHALE_JOB_INTERVAL_SEC, first=25, name="whales")
+        app.job_queue.run_repeating(news_digest_job, interval=S.NEWS_DIGEST_INTERVAL_MINUTES*60, first=60, name="newsdigest")
+        app.job_queue.run_once(warmup_job, when=10, name="warmup")
 
     async def cmd_autosignals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if not context.args:
-                await update.message.reply_text("نمونه: /autosignals on 60 10  یا  /autosignals off"); return
+                await update.message.reply_text("نمونه: /autosignals on 60 10 یا /autosignals off"); return
             mode=context.args[0].lower()
             app = context.application
             if mode=="on":
@@ -1864,6 +2209,28 @@ def run_telegram():
         except Exception as e:
             await update.message.reply_text(f"خطا: {e}")
 
+    async def cmd_autopilot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            if not context.args:
+                await update.message.reply_text("نمونه: /autopilot on 45 80 یا /autopilot off"); return
+            mode=context.args[0].lower()
+            app=context.application
+            if mode=="on":
+                interval=int(context.args[1]) if len(context.args)>1 else S.AUTOSCAN_INTERVAL_MINUTES
+                topn=int(context.args[2]) if len(context.args)>2 else S.RESEARCH_TOPN
+                app.bot_data["autopilot_enabled"]=True; app.bot_data["research_topn"]=topn
+                for j in app.job_queue.get_jobs_by_name("autoscan"): j.schedule_removal()
+                app.job_queue.run_repeating(autoscan_job, interval=interval*60, first=10, name="autoscan")
+                await update.message.reply_text(f"✅ Autopilot فعال شد: هر {interval} دقیقه، TopN={topn}.")
+            elif mode=="off":
+                app.bot_data["autopilot_enabled"]=False
+                for j in app.job_queue.get_jobs_by_name("autoscan"): j.schedule_removal()
+                await update.message.reply_text("⛔️ Autopilot غیرفعال شد.")
+            else:
+                await update.message.reply_text("حالت نامعتبر. on/off")
+        except Exception as e:
+            await update.message.reply_text(f"خطا: {e}")
+
     application = ApplicationBuilder()\
         .token(S.TELEGRAM_BOT_TOKEN)\
         .post_init(lambda app: schedule_jobs(app, bot))\
@@ -1883,15 +2250,15 @@ def run_telegram():
     application.add_handler(CommandHandler("watchlist", cmd_watchlist))
     application.add_handler(CommandHandler("backtest", cmd_backtest))
     application.add_handler(CommandHandler("whales", cmd_whales))
+    application.add_handler(CommandHandler("opportunities", cmd_opportunities))
+    application.add_handler(CommandHandler("autopilot", cmd_autopilot))
     application.add_handler(CommandHandler("monitor", cmd_monitor))
     logger.info("Telegram bot running...")
 
-    # default subscriber
     if S.TELEGRAM_CHAT_ID:
         try: db_add_subscriber(int(S.TELEGRAM_CHAT_ID))
         except: pass
 
-    # schedule is handled via post_init; PTB starts JobQueue automatically
     application.run_polling()
 
 # ---------------- Entry ----------------
