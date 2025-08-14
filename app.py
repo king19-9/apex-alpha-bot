@@ -1627,7 +1627,8 @@ def run_telegram():
     if not TELEGRAM_AVAILABLE or not S.TELEGRAM_BOT_TOKEN:
         logger.error("Telegram not available or TELEGRAM_BOT_TOKEN missing. Running CLI + HTTP.")
         async def main():
-            await start_http_server()
+            if S.ENABLE_HTTP:
+                await start_http_server()
             await run_cli()
         asyncio.run(main())
         return
@@ -1833,8 +1834,8 @@ def run_telegram():
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("ping", cmd_ping))
-    application.add_handler(CommandHandler("subscribe", lambda u,c: cmd_subscribe(u,c)))
-    application.add_handler(CommandHandler("unsubscribe", lambda u,c: cmd_unsubscribe(u,c)))
+    application.add_handler(CommandHandler("subscribe", cmd_subscribe))
+    application.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
     application.add_handler(CommandHandler("analyze", cmd_analyze))
     application.add_handler(CommandHandler("signals", cmd_signals))
     application.add_handler(CommandHandler("autosignals", cmd_autosignals))
@@ -1852,8 +1853,7 @@ def run_telegram():
         try: db_add_subscriber(int(S.TELEGRAM_CHAT_ID))
         except: pass
 
-    # schedule
-    application.job_queue.start()
+    # schedule (no application.job_queue.start(); PTB starts it internally)
     application.create_task(schedule_jobs(application, bot))
     application.run_polling()
 

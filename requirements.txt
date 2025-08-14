@@ -5,7 +5,7 @@ scikit-learn
 joblib
 vaderSentiment
 ccxt
-python-telegram-bot==20.7
+python-telegram-bot[job-queue]==20.7
 python-dotenv
 sqlalchemy
 psycopg2-binary
