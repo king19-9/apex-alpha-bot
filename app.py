@@ -9,6 +9,7 @@
 # - Risk mgmt + leverage suggestion + smart entry/exit + reports
 # - Cool Telegram landing + simplified commands (aliases) + menu (inline keyboard)
 # - On-chain whales integration (Whale Alert) with detailed Persian AI explanation
+# - NEW: Scan-based on-chain fallback (Etherscan/Polygonscan/BscScan) + Dexscreener integration for DEX flows
 
 import os, sys, time, asyncio, statistics, random, logging, json, datetime, re
 from dataclasses import dataclass, field
@@ -60,6 +61,14 @@ except Exception:
 # SQLAlchemy (Postgres/SQLite)
 from sqlalchemy import create_engine, text, bindparam
 
+# Try external providers (DEX + Scan-based on-chain)
+_PROVIDERS_AVAILABLE = False
+try:
+    from providers import dexscreener_search_symbol, scan_get_tx_by_hash, scan_fetch_recent_native_whales
+    _PROVIDERS_AVAILABLE = True
+except Exception:
+    _PROVIDERS_AVAILABLE = False
+
 # ---------------- Settings ----------------
 def getenv_bool(k: str, default: bool) -> bool:
     v = os.getenv(k)
@@ -78,12 +87,21 @@ class Settings:
     CRYPTOPANIC_API_KEY: Optional[str] = os.getenv("CRYPTOPANIC_API_KEY")
     NEWS_API_KEY: Optional[str] = os.getenv("NEWS_API_KEY")
 
-    # On-chain whales (Whale Alert / optional)
+    # On-chain whales (Whale Alert / optional) + NEW scan-based + Dexscreener
     ENABLE_ONCHAIN_WHALES: bool = getenv_bool("ENABLE_ONCHAIN_WHALES", True)
     WHALEALERT_API_KEY: Optional[str] = os.getenv("WHALEALERT_API_KEY")
     ONCHAIN_MIN_USD: float = float(os.getenv("ONCHAIN_MIN_USD", "1000000"))
     ONCHAIN_JOB_INTERVAL_SEC: int = int(os.getenv("ONCHAIN_JOB_INTERVAL_SEC", "240"))
     ONCHAIN_LOOKBACK_MIN: int = int(os.getenv("ONCHAIN_LOOKBACK_MIN", "30"))
+    ONCHAIN_PROVIDER: str = os.getenv("ONCHAIN_PROVIDER", "whalealert")  # whalealert | scan | both
+    ETHERSCAN_API_KEY: Optional[str] = os.getenv("ETHERSCAN_API_KEY")
+    POLYGONSCAN_API_KEY: Optional[str] = os.getenv("POLYGONSCAN_API_KEY")
+    BSCSCAN_API_KEY: Optional[str] = os.getenv("BSCSCAN_API_KEY")
+    SCAN_MAX_BLOCKS: int = int(os.getenv("SCAN_MAX_BLOCKS", "20"))
+
+    DEXSCREENER_ENABLED: bool = getenv_bool("DEXSCREENER_ENABLED", True)
+    DEXSCREENER_TIMEOUT_SEC: int = int(os.getenv("DEXSCREENER_TIMEOUT_SEC", "6"))
+    DEXSCREENER_TOPN: int = int(os.getenv("DEXSCREENER_TOPN", "5"))
 
     # Telegram
     TELEGRAM_BOT_TOKEN: Optional[str] = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -112,6 +130,7 @@ class Settings:
     ENABLE_DAILY_REPORT: bool = getenv_bool("ENABLE_DAILY_REPORT", False)
     DAILY_REPORT_UTC_HOUR: int = int(os.getenv("DAILY_REPORT_UTC_HOUR","0"))
     PERFORMANCE_HORIZON_HOURS: int = int(os.getenv("PERFORMANCE_HORIZON_HOURS","24"))
+    NEWS_DIGEST_INTERVAL_MINUTES: int = int(os.getenv("NEWS_DIGEST_INTERVAL_MINUTES", "180"))  # اضافه شد
 
     # Realtime Monitor
     ENABLE_MONITOR: bool = getenv_bool("ENABLE_MONITOR", True)
@@ -573,7 +592,7 @@ async def cc_fetch_ohlcv_extended(symbol: str, quote="USD", timeframe="1d", tota
         await asyncio.sleep(0.2)
     return out[-total_limit:]
 
-# On-chain Whales (Whale Alert)
+# On-chain Whales (Whale Alert + Scan fallback)
 WHALEALERT_BASE = "https://api.whale-alert.io/v1/transactions"
 CURRENCY_MAP = {
     "BTC":"btc","ETH":"eth","USDT":"usdt","USDC":"usdc","BUSD":"busd","XRP":"xrp","BNB":"bnb","TRX":"trx","SOL":"sol","MATIC":"matic"
@@ -589,13 +608,12 @@ EXPLORERS = {
     "usdt":{"tx":"", "addr":""}, "usdc":{"tx":"","addr":""}, "busd":{"tx":"","addr":""}
 }
 
-async def onchain_fetch_whales(symbol: str, min_usd: float = None, lookback_min: int = None) -> List[Dict[str,Any]]:
+async def _onchain_fetch_whalealert(symbol: str, min_usd: float = None, lookback_min: int = None) -> List[Dict[str,Any]]:
     if not (S.ENABLE_ONCHAIN_WHALES and S.WHALEALERT_API_KEY):
         return []
     try:
         curr = CURRENCY_MAP.get(symbol.upper())
         if not curr:
-            # برای بیشتر سمبل‌ها نمی‌شود مستقیم فیلتر کرد؛ برمی‌گردیم خالی
             return []
         start = int(time.time() - (lookback_min or S.ONCHAIN_LOOKBACK_MIN)*60)
         end = int(time.time())
@@ -637,10 +655,76 @@ async def onchain_fetch_whales(symbol: str, min_usd: float = None, lookback_min:
             except Exception: pass
         return out
     except Exception as e:
-        logger.error(f"onchain_fetch_whales {symbol} error: {e}")
+        logger.error(f"onchain_fetch_whales(WhaleAlert) {symbol} error: {e}")
         try: db_inc_counter("net_err", 1)
         except: pass
         return []
+
+def _estimate_blocks(network: str, lookback_min: int) -> int:
+    bt = {"eth": 12, "bnb": 3, "matic": 2}  # sec
+    sec = bt.get(network.lower(), 10)
+    blocks = int((lookback_min * 60) / sec)
+    return max(1, min(S.SCAN_MAX_BLOCKS, blocks))
+
+async def _onchain_fetch_scan_native(symbol: str, min_usd: float = None, lookback_min: int = None) -> List[Dict[str,Any]]:
+    # Scan networks supported: ETH, BNB, MATIC
+    if not _PROVIDERS_AVAILABLE:
+        return []
+    net_map = {"ETH":"eth", "BNB":"bnb", "MATIC":"matic"}
+    network = net_map.get(symbol.upper())
+    if not network:
+        return []
+    # Need price for notional calc
+    md = await cg_fetch_market_by_symbol(symbol)
+    price = float(md.get("price") or 0.0)
+    if price <= 0:
+        return []
+    look = lookback_min or S.ONCHAIN_LOOKBACK_MIN
+    blocks = _estimate_blocks(network, look)
+    try:
+        out = await scan_fetch_recent_native_whales(network=network,
+                                                    min_usd=float(min_usd or S.ONCHAIN_MIN_USD),
+                                                    lookback_blocks=blocks,
+                                                    price_usd=price,
+                                                    api_keys={
+                                                        "eth": S.ETHERSCAN_API_KEY,
+                                                        "matic": S.POLYGONSCAN_API_KEY,
+                                                        "bnb": S.BSCSCAN_API_KEY
+                                                    })
+        # Log raw
+        ts_now = int(time.time())
+        for t in out:
+            try:
+                db_log_whale_trade_raw(int(t.get("timestamp") or ts_now), f"onchain_scan:{network}", symbol.upper(),
+                                       symbol.upper()+"/ONCHAIN", "MOVE", 0.0, 0.0, float(t.get("amount_usd") or 0.0),
+                                       t.get("hash"), json.dumps(t, ensure_ascii=False)[:2000])
+            except Exception:
+                pass
+        return out
+    except Exception as e:
+        logger.error(f"scan-native onchain {symbol}/{network} err: {e}")
+        try: db_inc_counter("net_err", 1)
+        except: pass
+        return []
+
+async def onchain_fetch_whales(symbol: str, min_usd: float = None, lookback_min: int = None) -> List[Dict[str,Any]]:
+    # Combined provider with fallback based on ONCHAIN_PROVIDER
+    provider = (S.ONCHAIN_PROVIDER or "whalealert").lower()
+    results: List[Dict[str,Any]] = []
+    try:
+        if provider in ("whalealert","both"):
+            wa = await _onchain_fetch_whalealert(symbol, min_usd=min_usd, lookback_min=lookback_min)
+            results.extend(wa)
+        if provider in ("scan","both") and _PROVIDERS_AVAILABLE:
+            sc = await _onchain_fetch_scan_native(symbol, min_usd=min_usd, lookback_min=lookback_min)
+            # Merge unique by hash if present
+            seen = set([r.get("hash") for r in results if r.get("hash")])
+            for r in sc:
+                if r.get("hash") and r["hash"] in seen: continue
+                results.append(r)
+    except Exception as e:
+        logger.error(f"onchain_fetch_whales combined err: {e}")
+    return results
 
 # Exchanges helpers (fallback names)
 EX_FALLBACKS = {
@@ -1500,15 +1584,22 @@ def format_whales_alert(symbol: str, whales: Dict[str,Any], analysis: Optional[D
         net = oc.get("network",""); tx = oc.get("hash"); fa=oc.get("from"); ta=oc.get("to"); usd=oc.get("amount_usd")
         explorer = EXPLORERS.get(net.lower(), {})
         tx_url = (explorer.get("tx") or "").format(tx=tx) if explorer.get("tx") else ""
-        from_url = (explorer.get("addr") or "").format(addr=fa) if explorer.get("addr") and fa else ""
-        to_url = (explorer.get("addr") or "").format(addr=ta) if explorer.get("addr") and ta else ""
         oc_lines.append(f"{net.upper()} ${fmt_num(usd,0)} | از: {fa or '-'} → به: {ta or '-'}" + (f" | TX: {tx_url}" if tx_url else ""))
+
+    # Dexscreener (DEX flows)
+    dex = whales.get("dexscreener") or {}
+    pairs = dex.get("pairs") or []
+    dex_lines=[]
+    if pairs:
+        for p in pairs[:5]:
+            dex_lines.append(f"{p.get('chain','').upper()} {p.get('dex','')} | {p.get('base')}/{p.get('quote')} | ${fmt_num(p.get('price_usd'),4)} | Vol24h ${fmt_num(p.get('vol24h'),0)} | tx m5 {p.get('tx_m5_buys',0)}/{p.get('tx_m5_sells',0)}")
 
     text = []
     text.append(f"🐋 نهنگ‌ها روی {symbol}: Bias={bias:+.2f} ({side}) | Notional=${fmt_num(total,0)} | Window≈{int(window) if window else '~'}m | Quote غالب: {dom_q}")
     if ex_lines: text.append("جزئیات صرافی‌ها:\n- " + "\n- ".join(ex_lines))
     if lg_lines: text.append("بزرگ‌ترین معاملات (صرافی):\n- " + "\n- ".join(lg_lines))
     if oc_lines: text.append("تراکنش‌های آن‌چین اخیر:\n- " + "\n- ".join(oc_lines))
+    if dex_lines: text.append("📡 DEX (Dexscreener):\n- " + "\n- ".join(dex_lines))
     if analysis:
         text.append(f"📌 وضعیت بازار: Regime={reg} | P(up)={quant.get('prob_up',0.5):.2f} | اطمینان مدل={quant.get('model_acc',0.6):.2f}")
     text.append("🧠 توضیح هوش مصنوعی:\n- " + "\n- ".join(ai_explain))
@@ -1599,8 +1690,8 @@ def format_analysis(analysis: Dict[str,Any])->str:
                 parts.append(f"{ex}: Buy ${fmt_num(fv.get('buy',0),0)} ({fv.get('count_buy',0)}) / Sell ${fmt_num(fv.get('sell',0),0)} ({fv.get('count_sell',0)})")
             out.append("   └ جریان نهنگ‌ها: " + " | ".join(parts))
     if walls:
-        if walls.get("bids"): out.append("🧱 دیوارهای خرید: " + "; ".join([f"{w['exchange']} {fmt_num(w['price'],2)} (${fmt_num(w['notional'],0)})" for w in walls["bids"]]))
-        if walls.get("asks"): out.append("🧱 دیوارهای فروش: " + "; ".join([f"{w['exchange']} {fmt_num(w['price'],2)} (${fmt_num(w['notional'],0)})" for w in walls["asks"]]))
+        if walls.get("bids"): out.append("🧱 دیوارهای خرید: " + "; ".join([f\"{w['exchange']} {fmt_num(w['price'],2)} (${fmt_num(w['notional'],0)})\" for w in walls['bids']]))
+        if walls.get("asks"): out.append("🧱 دیوارهای فروش: " + "; ".join([f\"{w['exchange']} {fmt_num(w['price'],2)} (${fmt_num(w['notional'],0)})\" for w in walls['asks']]))
     out.append("")
     if risk:
         out.append("⚠️ مدیریت ریسک:")
@@ -1673,6 +1764,13 @@ class DataFetcher:
         t_deriv  = asyncio.create_task(ex_fetch_derivatives(symbol))
         # On-chain whales
         t_onchain = asyncio.create_task(onchain_fetch_whales(symbol))
+        # Dexscreener (optional)
+        t_dex = None
+        if _PROVIDERS_AVAILABLE and S.DEXSCREENER_ENABLED:
+            try:
+                t_dex = asyncio.create_task(dexscreener_search_symbol(symbol, topn=S.DEXSCREENER_TOPN, timeout=S.DEXSCREENER_TIMEOUT_SEC))
+            except Exception:
+                t_dex = None
         whales = {}
         try:
             whales = await asyncio.wait_for(t_whales, timeout=S.FAST_WHALES_TIMEOUT_SEC if fast_flag else 20)
@@ -1689,8 +1787,16 @@ class DataFetcher:
         try:
             onchain = await asyncio.wait_for(t_onchain, timeout=10 if fast_flag else 25)
         except Exception: onchain=[]
+        dex_pairs=[]
+        if t_dex:
+            try:
+                dex_pairs = await asyncio.wait_for(t_dex, timeout=S.DEXSCREENER_TIMEOUT_SEC)
+            except Exception:
+                dex_pairs=[]
         if isinstance(whales, dict):
             whales["onchain"]=onchain
+            if dex_pairs:
+                whales["dexscreener"]={"pairs": dex_pairs}
         bundle={"market_data":market_data,"ohlcv":ohlcv,"news":news,"whales":whales,"orderbook_walls":walls,"derivatives":deriv,"sources":market_data.get("sources",[])}
         if not price and not any(len(v) for v in ohlcv.values()):
             logger.warning(f"No live data for {symbol}, using offline"); bundle=self.offline_bundle(symbol)
@@ -1702,6 +1808,205 @@ class DataFetcher:
 def analyze_elliott(df: pd.DataFrame, deviation=0.05)->Dict[str,Any]:
     piv=zigzag(df["close"], deviation=deviation); res=elliott_validate_and_score(piv)
     res["pivots_count"]=len(piv); res["last_pivots"]=piv[-10:]; return res
+
+# ---------------- Utils: OHLCV -> DataFrame ----------------
+def to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["open","high","low","close","volume"])
+    df = pd.DataFrame(rows)
+    if "time" in df.columns:
+        df = df.sort_values("time")
+        df.index = df["time"].astype(np.int64)
+        df.index.name = "time"
+    for col in ["open","high","low","close","volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(method="ffill").fillna(method="bfill")
+        else:
+            df[col] = np.nan
+    return df[["open","high","low","close","volume"]].dropna(how="any")
+
+# ---------------- Core Bot ----------------
+class CryptoBotAI:
+    def __init__(self):
+        self.fetcher = DataFetcher()
+
+    async def train_models_bg(self, symbol: str, tf: str, df: pd.DataFrame):
+        try:
+            _ = rf_train_predict(df, symbol=symbol, tf=tf, force_train=True)
+        except Exception:
+            pass
+        try:
+            _ = stacking_predict(df, symbol, tf, force_train=True)
+        except Exception:
+            pass
+
+    async def analyze_symbol(self, symbol: str, fast: bool=True, force_train: bool=False) -> Dict[str, Any]:
+        t0 = time.perf_counter()
+        bundle = await self.fetcher.fetch_bundle(symbol, fast=fast)
+        md = bundle.get("market_data", {}) or {}
+        price = md.get("price")
+        ohlcv = bundle.get("ohlcv", {}) or {}
+        dfs: Dict[str, pd.DataFrame] = {tf: to_df(ohlcv.get(tf, [])) for tf in S.TIMEFRAMES}
+        # انتخاب تایم‌فریم اصلی
+        main_tf = "4h" if "4h" in dfs and not dfs["4h"].empty else (S.TIMEFRAMES[0] if S.TIMEFRAMES else "1h")
+        dfm = dfs.get(main_tf, pd.DataFrame())
+        technical = compute_technical_summary(dfm) if not dfm.empty else {}
+        technical_adv = compute_advanced_technicals(dfm) if (S.ENABLE_ADVANCED_TECHNICALS and not dfm.empty) else {}
+        candles = detect_candlestick_patterns(dfm) if not dfm.empty else {"patterns":[]}
+        ms = detect_order_blocks(dfm) if not dfm.empty else {"trend":"نامشخص","bos":{"bos_up":False,"bos_down":False},"order_blocks":{}}
+        ell = analyze_elliott(dfm) if not dfm.empty else {}
+        sessions = analyze_sessions(dfs.get("1h", pd.DataFrame())) if "1h" in dfs else {"bias":"خنثی","session_stats":{}}
+        news = bundle.get("news", []) or []
+        sentiment = analyze_sentiment_news(news) if news else {"average_sentiment":0.0,"items":[],"topics":[]}
+        deriv = bundle.get("derivatives", {}) or {}
+        whales = bundle.get("whales", {}) or {}
+        walls  = bundle.get("orderbook_walls", {}) or {}
+
+        reg = regime_detection(dfm) if not dfm.empty else {"regime":"unknown","confidence":0.0}
+        regime = reg.get("regime","unknown"); regime_conf = reg.get("confidence",0.0)
+
+        # Quant ensemble
+        quant = {"prob_up":0.5,"model_acc":0.6,"rf":{},"strategies":{},"last_signals":{},"regime":regime,"regime_conf":regime_conf}
+        if not dfm.empty:
+            q = auto_ensemble_prob(dfm, symbol, main_tf, sentiment_value=sentiment.get("average_sentiment",0.0),
+                                   regime=regime, whales_bias=whales.get("bias",0.0), derivatives=deriv,
+                                   force_train=force_train)
+            quant.update(q); quant["regime"]=regime; quant["regime_conf"]=regime_conf
+
+        # Risk + Entry/Exit
+        risk = risk_management_calc(dfm, price=price or 0.0, balance=S.BALANCE, risk_per_trade=S.RISK_PER_TRADE,
+                                    prob_up=quant.get("prob_up",0.55))
+        atrv = technical.get("atr", risk.get("atr", 0.0))
+        entry_plan = entry_exit_rules(price or 0.0, dfm, walls, "BUY" if quant.get("prob_up",0.5)>=0.5 else "SELL", atrv)
+
+        # Signal
+        signal = map_score_to_signal(quant.get("prob_up",0.5), quant.get("model_acc",0.6))
+        confidence = float(max(0.5, min(0.99, quant.get("model_acc",0.6))))
+
+        # Timeframes block
+        tfd={}
+        for tf, d in dfs.items():
+            if d is None or d.empty: continue
+            tfd[tf] = {"technical": compute_technical_summary(d)}
+
+        analysis = {
+            "symbol": symbol.upper(),
+            "market_data": md,
+            "technical": technical,
+            "technical_advanced": technical_adv,
+            "candles": candles,
+            "market_structure": ms,
+            "elliott": ell,
+            "sessions": sessions,
+            "sentiment": sentiment,
+            "derivatives": deriv,
+            "whales": whales,
+            "orderbook_walls": walls,
+            "quant": quant,
+            "signal": signal,
+            "confidence": confidence,
+            "risk_management": risk,
+            "entry_plan": entry_plan,
+            "timeframes": tfd,
+        }
+        try: db_log_perf("analyze_symbol", (time.perf_counter()-t0)*1000.0, symbol=symbol)
+        except: pass
+        return analysis
+
+    async def get_trading_signals(self, fast: bool=True) -> List[Dict[str, Any]]:
+        wl = db_get_watchlist()
+        symbols: List[str] = wl if wl else [c["symbol"] for c in (await discover_universe())[:50]]
+        out: List[Dict[str, Any]] = []
+        sem = asyncio.Semaphore(6)
+        async def run(sym):
+            async with sem:
+                try:
+                    a = await self.analyze_symbol(sym, fast=fast, force_train=False)
+                    out.append({"symbol": sym, "signal": a.get("signal","HOLD"), "confidence": a.get("confidence",0.6)})
+                except Exception as e:
+                    logger.error(f"get_trading_signals {sym} err: {e}")
+        await asyncio.gather(*[run(s) for s in symbols])
+        return out
+
+# ---------------- Evaluation helpers ----------------
+async def _get_price_at_ts(symbol: str, ts: int) -> Optional[float]:
+    # ts in seconds
+    try:
+        rows = await cc_fetch_ohlcv(symbol, "USD", "1h", limit=200, to_ts=int(ts))
+        if not rows:
+            return None
+        # find the bar with time <= ts*1000
+        ts_ms = ts*1000
+        prevs = [r for r in rows if r.get("time",0) <= ts_ms]
+        if not prevs:
+            return float(rows[0].get("close") or 0.0)
+        return float(prevs[-1].get("close") or 0.0)
+    except Exception:
+        return None
+
+async def _get_price_now(symbol: str) -> Optional[float]:
+    try:
+        t = await ex_fetch_ticker(symbol)
+        return float(t.get("price") or 0.0) if t else None
+    except Exception:
+        return None
+
+async def evaluate_logged_signals_async(hours: int = 24) -> Dict[str, Any]:
+    now = int(time.time())
+    cutoff = now - hours*3600
+    rows = db_get_pending_signals(cutoff)
+    if not rows:
+        return {"evaluated": 0}
+    evaluated = 0; hits = 0; rets = []
+    for r in rows:
+        try:
+            sym = r["symbol"]; side = r["signal"].upper()
+            ts0 = int(r["ts"])
+            p0 = float(r["price"]) if r.get("price") is not None else None
+            if not p0:
+                p0 = await _get_price_at_ts(sym, ts0)
+            p1 = await _get_price_now(sym)
+            if not p0 or not p1:
+                continue
+            direction = 1 if side=="BUY" else -1 if side=="SELL" else 0
+            ret = direction * ((p1/p0) - 1.0)
+            db_set_signal_evaluated(r["id"], float(ret))
+            evaluated += 1; hits += 1 if ret>0 else 0; rets.append(ret)
+        except Exception as e:
+            logger.error(f"eval signal {r.get('id')} err: {e}")
+    if evaluated==0:
+        return {"evaluated": 0}
+    pos = sum([x for x in rets if x>0]); neg = -sum([x for x in rets if x<0])
+    pf = float(pos/neg) if neg>0 else float("inf")
+    return {"evaluated": evaluated, "hit": hits/evaluated, "avg_ret": float(np.mean(rets)), "pf": pf}
+
+async def evaluate_whales_async(hours: int = 24) -> Dict[str, Any]:
+    now = int(time.time())
+    cutoff = now - hours*3600
+    rows = db_get_pending_whale_events(cutoff)
+    if not rows:
+        return {"evaluated": 0}
+    evaluated=0; rets=[]
+    for r in rows:
+        try:
+            ex = r["exchange"]; sym = r["symbol"]; bias = float(r.get("bias") or 0.0)
+            ts0 = int(r["ts"])
+            p0 = await _get_price_at_ts(sym, ts0)
+            p1 = await _get_price_now(sym)
+            if not p0 or not p1:
+                continue
+            direction = 1 if bias>0 else -1 if bias<0 else 0
+            ret = direction * ((p1/p0) - 1.0)
+            db_set_whale_event_evaluated(r["id"], float(ret))
+            db_update_whale_perf(ex, sym, float(ret))
+            evaluated += 1; rets.append(ret)
+        except Exception as e:
+            logger.error(f"eval whale {r.get('id')} err: {e}")
+    if evaluated==0:
+        return {"evaluated": 0}
+    pos = sum([x for x in rets if x>0]); neg = -sum([x for x in rets if x<0])
+    pf = float(pos/neg) if neg>0 else float("inf")
+    return {"evaluated": evaluated, "hit": float((np.array(rets)>0).mean()), "avg_ret": float(np.mean(rets)), "pf": pf}
 
 # ---------------- Realtime Monitor (fast polling) ----------------
 async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
@@ -2116,7 +2421,7 @@ async def news_digest_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def onchain_watch_job(context: ContextTypes.DEFAULT_TYPE):
     # اسکن دوره‌ای نهنگ‌های آن‌چین برای چند نماد مهم (واچ‌لیست یا Top)
-    if not (S.ENABLE_ONCHAIN_WHALES and S.WHALEALERT_API_KEY):
+    if not (S.ENABLE_ONCHAIN_WHALES and (S.WHALEALERT_API_KEY or S.ETHERSCAN_API_KEY or S.POLYGONSCAN_API_KEY or S.BSCSCAN_API_KEY)):
         return
     app=context.application
     try:
