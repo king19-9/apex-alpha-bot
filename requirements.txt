@@ -4,8 +4,20 @@ numpy
 scikit-learn
 ccxt
 websockets
-python-telegram-bot
-sqlalchemy
+python-telegram-bot==20.7
+SQLAlchemy
 redis
 matplotlib
 vaderSentiment
+plotly
+kaleido
+tweepy
+requests
+beautifulsoup4
+joblib
+psycopg2-binary
+# اختیاری برای NLP پیشرفته و LSTM (با احتیاط در Railway)
+# transformers
+# tensorflow
+# یا به جای tensorflow از torch استفاده کنید:
+torch
