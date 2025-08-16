@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Advanced 24/7 Crypto AI Bot - Final Upgraded Version
-Features: Multi-chain Analysis, Advanced TA, AI Predictions, Dynamic Risk Management,
+Advanced 24/7 Crypto AI Bot - Final Upgraded & Resilient Version
+Features: Graceful degradation for missing API keys, DB & Cache fixes,
+Multi-chain Analysis, Advanced TA, AI Predictions, Dynamic Risk Management,
 Interactive Telegram Bot, Web Dashboard, Enhanced Stability & Modularity.
 """
 
@@ -17,7 +18,7 @@ import json
 import datetime
 import re
 import io
-from dataclasses import dataclass, field  # <<< FIX: 'field' has been added here
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
@@ -55,15 +56,15 @@ import tweepy
 class Settings:
     # Essential tokens and IDs
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN")
-    ADMIN_CHAT_ID: str = os.getenv("ADMIN_CHAT_ID") # For admin notifications
+    ADMIN_CHAT_ID: str = os.getenv("ADMIN_CHAT_ID")
 
-    # Database and Cache
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///crypto_bot.db")
-    REDIS_HOST: str = os.getenv('REDIS_HOST', 'localhost')
+    # Database and Cache (Provided by Railway Environment)
+    DATABASE_URL: str = os.getenv("DATABASE_URL")
+    REDIS_HOST: str = os.getenv('REDIS_HOST')
     REDIS_PORT: int = int(os.getenv('REDIS_PORT', 6379))
+    REDIS_PASSWORD: str = os.getenv('REDIS_PASSWORD')
 
-    # API Keys
-    COINGECKO_API_KEY: str = os.getenv("COINGECKO_API_KEY")
+    # API Keys (OPTIONAL - Bot will run without them)
     NEWS_API_KEY: str = os.getenv("NEWS_API_KEY")
     TWITTER_BEARER_TOKEN: str = os.getenv("TWITTER_BEARER_TOKEN")
     ETHERSCAN_API_KEY: str = os.getenv("ETHERSCAN_API_KEY")
@@ -74,11 +75,6 @@ class Settings:
     TIMEFRAMES: List[str] = field(default_factory=lambda: os.getenv("TIMEFRAMES", "1h,4h,1d").split(","))
     CACHE_TTL_SECONDS: int = int(os.getenv("CACHE_TTL_SECONDS", "300"))
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "20"))
-    
-    # Analysis Modules Toggle
-    ENABLE_ONCHAIN: bool = os.getenv("ENABLE_ONCHAIN", "true").lower() == "true"
-    ENABLE_SENTIMENT: bool = os.getenv("ENABLE_SENTIMENT", "true").lower() == "true"
-    ENABLE_PREDICTION: bool = os.getenv("ENABLE_PREDICTION", "true").lower() == "true"
 
     # Web Dashboard
     ENABLE_WEB_DASHBOARD: bool = os.getenv("ENABLE_WEB_DASHBOARD", "true").lower() == "true"
@@ -98,18 +94,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Redis Client
-try:
-    redis_client = redis.Redis(
-        host=S.REDIS_HOST, port=S.REDIS_PORT, db=0,
-        decode_responses=True, socket_connect_timeout=5
-    )
-    redis_client.ping()
-    redis_available = True
-    logger.info("Redis connected successfully.")
-except Exception as e:
-    logger.warning(f"Redis not available, caching will be disabled: {e}")
-    redis_available = False
-    redis_client = None
+redis_available = False
+redis_client = None
+if S.REDIS_HOST and S.REDIS_PASSWORD:
+    try:
+        redis_client = redis.Redis(
+            host=S.REDIS_HOST, port=S.REDIS_PORT, db=0, password=S.REDIS_PASSWORD,
+            decode_responses=True, socket_connect_timeout=5
+        )
+        redis_client.ping()
+        redis_available = True
+        logger.info("Redis connected successfully.")
+    except Exception as e:
+        logger.warning(f"Redis connection failed despite credentials being present: {e}")
+else:
+    logger.warning("Redis credentials not found in environment. Caching will be disabled.")
+
 
 # Database Setup
 Base = declarative_base()
@@ -139,6 +139,9 @@ class Signal(Base):
     timeframe = Column(String(10), default='1h')
     user = relationship("User", back_populates="signals")
 
+if not S.DATABASE_URL:
+    logger.critical("FATAL: DATABASE_URL environment variable is not set!")
+    sys.exit(1)
 
 try:
     engine = create_engine(S.DATABASE_URL)
@@ -146,7 +149,7 @@ try:
     Base.metadata.create_all(engine)
     logger.info("Database connected and tables created.")
 except Exception as e:
-    logger.error(f"Database connection failed: {e}")
+    logger.critical(f"Database connection failed. Is the driver installed and DATABASE_URL correct? Error: {e}", exc_info=True)
     sys.exit(1)
 
 # ==============================================================================
@@ -195,7 +198,7 @@ async def fetch_with_retry(session: aiohttp.ClientSession, url: str, params: dic
             await asyncio.sleep(2 ** attempt)
 
 # ==============================================================================
-# 5. CORE ANALYSIS MODULES (TA, On-Chain, Sentiment, AI Prediction)
+# 5. CORE ANALYSIS MODULES (TA, Sentiment, AI Prediction)
 # ==============================================================================
 class AdvancedTechnicalAnalyzer:
     def calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
@@ -252,34 +255,41 @@ class EnhancedSentimentAnalyzer:
         if S.TWITTER_BEARER_TOKEN:
             try:
                 self.twitter_client = tweepy.Client(bearer_token=S.TWITTER_BEARER_TOKEN, wait_on_rate_limit=True)
+                logger.info("Twitter client initialized successfully.")
             except Exception as e:
-                logger.error(f"Failed to initialize Twitter client: {e}")
+                logger.error(f"Failed to initialize Twitter client despite token presence: {e}")
+        else:
+            logger.warning("TWITTER_BEARER_TOKEN not found. Twitter analysis will be skipped.")
 
     async def analyze(self, symbol: str) -> dict:
-        scores = []
+        scores, weights = [], []
+        
         if self.twitter_client:
             twitter_score = await self.analyze_twitter(symbol)
             if twitter_score is not None:
-                scores.append(twitter_score * 0.6) # Twitter has higher weight
+                scores.append(twitter_score)
+                weights.append(0.6)
         
         if S.NEWS_API_KEY:
             news_score = await self.analyze_news(symbol)
             if news_score is not None:
-                scores.append(news_score * 0.4)
+                scores.append(news_score)
+                weights.append(0.4)
 
         if not scores:
-            return {'sentiment': 'neutral', 'score': 0.0}
+            return {'sentiment': 'neutral', 'score': 0.0, 'summary': 'No data sources available'}
 
-        final_score = np.mean(scores)
+        final_score = np.average(scores, weights=weights if len(weights) == len(scores) and sum(weights)>0 else None)
         sentiment = 'bullish' if final_score > 0.15 else 'bearish' if final_score < -0.15 else 'neutral'
-        return {'sentiment': sentiment, 'score': final_score}
+        return {'sentiment': sentiment, 'score': final_score, 'summary': f"Sentiment is {sentiment} (score: {final_score:.2f})"}
 
     async def analyze_twitter(self, symbol: str) -> Optional[float]:
         try:
             query = f"#{symbol} OR ${symbol} -is:retweet lang:en"
-            tweets = self.twitter_client.search_recent_tweets(query=query, max_results=50)
-            if not tweets.data: return 0.0
-            scores = [self.vader.polarity_scores(tweet.text)['compound'] for tweet in tweets.data]
+            # Using async wrapper for sync tweepy method
+            response = await asyncio.to_thread(self.twitter_client.search_recent_tweets, query=query, max_results=50)
+            if not response.data: return 0.0
+            scores = [self.vader.polarity_scores(tweet.text)['compound'] for tweet in response.data]
             return np.mean(scores)
         except Exception as e:
             logger.error(f"Twitter sentiment analysis failed for {symbol}: {e}")
@@ -292,7 +302,7 @@ class EnhancedSentimentAnalyzer:
                 data = await fetch_with_retry(session, url)
                 articles = data.get('articles', [])
                 if not articles: return 0.0
-                scores = [self.vader.polarity_scores(a['title'])['compound'] for a in articles]
+                scores = [self.vader.polarity_scores(a['title'] if a['title'] else '')['compound'] for a in articles]
                 return np.mean(scores)
         except Exception as e:
             logger.error(f"News sentiment analysis failed for {symbol}: {e}")
@@ -321,6 +331,10 @@ class EnhancedPredictionEngine:
         logger.info(f"Training prediction model for {symbol}...")
         try:
             X, y = self._prepare_features(df)
+            if len(X) < 50:
+                logger.warning(f"Not enough data to train model for {symbol}. Skipping.")
+                return
+
             X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, shuffle=False)
             
             scaler = StandardScaler()
@@ -329,7 +343,6 @@ class EnhancedPredictionEngine:
             model = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42)
             model.fit(X_train_scaled, y_train)
 
-            # Save model and scaler
             dump(model, os.path.join(self.model_path, f"{symbol}_model.joblib"))
             dump(scaler, os.path.join(self.model_path, f"{symbol}_scaler.joblib"))
             self.models[symbol] = model
@@ -342,20 +355,21 @@ class EnhancedPredictionEngine:
         model_key = f"{symbol}_model.joblib"
         scaler_key = f"{symbol}_scaler.joblib"
         
-        # Load model if not in memory
         if symbol not in self.models:
             try:
                 self.models[symbol] = load(os.path.join(self.model_path, model_key))
                 self.scalers[symbol] = load(os.path.join(self.model_path, scaler_key))
             except FileNotFoundError:
-                await self.train_model(symbol, df)
+                await self.train_model(symbol, df.copy())
                 if symbol not in self.models:
                     return {'prediction': 'hold', 'confidence': 0.5}
         
-        model = self.models[symbol]
-        scaler = self.scalers[symbol]
+        model = self.models.get(symbol)
+        scaler = self.scalers.get(symbol)
+        if not model or not scaler:
+            return {'prediction': 'hold', 'confidence': 0.5}
 
-        X, _ = self._prepare_features(df)
+        X, _ = self._prepare_features(df.copy())
         if X.empty:
             return {'prediction': 'hold', 'confidence': 0.5}
             
@@ -381,28 +395,24 @@ class SignalGenerator:
     def generate(self, analysis: dict) -> dict:
         scores = {}
         
-        # TA Score
         ta_summary = analysis['technical_analysis']
-        if 'bullish' in ta_summary['trend']: scores['ta'] = 1.0
-        elif 'bearish' in ta_summary['trend']: scores['ta'] = -1.0
+        if 'bullish' in ta_summary.get('trend', ''): scores['ta'] = 1.0
+        elif 'bearish' in ta_summary.get('trend', ''): scores['ta'] = -1.0
         else: scores['ta'] = 0.0
-        if 'bullish' in ta_summary['momentum']: scores['ta'] += 0.5
-        elif 'bearish' in ta_summary['momentum']: scores['ta'] -= 0.5
-        scores['ta'] = np.clip(scores['ta'], -1, 1)
+        if 'bullish' in ta_summary.get('momentum', ''): scores['ta'] = (scores.get('ta', 0) + 0.5)
+        elif 'bearish' in ta_summary.get('momentum', ''): scores['ta'] = (scores.get('ta', 0) - 0.5)
+        scores['ta'] = np.clip(scores.get('ta', 0), -1, 1)
 
-        # Sentiment Score
         sentiment_summary = analysis['sentiment_analysis']
-        if sentiment_summary['sentiment'] == 'bullish': scores['sentiment'] = 1.0
-        elif sentiment_summary['sentiment'] == 'bearish': scores['sentiment'] = -1.0
+        if sentiment_summary.get('sentiment') == 'bullish': scores['sentiment'] = 1.0
+        elif sentiment_summary.get('sentiment') == 'bearish': scores['sentiment'] = -1.0
         else: scores['sentiment'] = 0.0
 
-        # AI Prediction Score
         prediction_summary = analysis['prediction']
-        if prediction_summary['prediction'] == 'buy': scores['prediction'] = 1.0
-        elif prediction_summary['prediction'] == 'sell': scores['prediction'] = -1.0
+        if prediction_summary.get('prediction') == 'buy': scores['prediction'] = 1.0
+        elif prediction_summary.get('prediction') == 'sell': scores['prediction'] = -1.0
         else: scores['prediction'] = 0.0
         
-        # Calculate final weighted score
         final_score = (scores.get('ta', 0) * self.weights['ta'] +
                        scores.get('sentiment', 0) * self.weights['sentiment'] +
                        scores.get('prediction', 0) * self.weights['prediction'])
@@ -417,7 +427,9 @@ class SignalGenerator:
 # ==============================================================================
 class AdvancedCryptoBot:
     def __init__(self):
-        self.exchange = ccxt.binance()
+        # Using a more general exchange, can be configured via env var
+        exchange_id = S.EXCHANGES[0] if S.EXCHANGES else 'binance'
+        self.exchange = getattr(ccxt, exchange_id)()
         self.ta_analyzer = AdvancedTechnicalAnalyzer()
         self.sentiment_analyzer = EnhancedSentimentAnalyzer()
         self.prediction_engine = EnhancedPredictionEngine()
@@ -428,7 +440,6 @@ class AdvancedCryptoBot:
         cached_data = cache_get(cache_key)
         if cached_data:
             df = pd.read_json(io.StringIO(cached_data['df']))
-            # Ensure the index is datetime
             df.index = pd.to_datetime(df.index)
             return df
 
@@ -440,9 +451,17 @@ class AdvancedCryptoBot:
             df.set_index('timestamp', inplace=True)
             cache_set(cache_key, {'df': df.to_json()})
             return df
-        except Exception as e:
-            logger.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+        except ccxt.BadSymbol:
+            logger.warning(f"Symbol {symbol} not found on {self.exchange.id}. Trying next exchange...")
+            # Fallback logic can be added here if needed
             return None
+        except Exception as e:
+            logger.error(f"Failed to fetch OHLCV for {symbol} on {self.exchange.id}: {e}")
+            return None
+        
+    async def close_exchange(self):
+        if self.exchange:
+            await self.exchange.close()
 
     async def analyze_symbol(self, symbol: str, user_chat_id: int) -> Optional[dict]:
         symbol = symbol.upper()
@@ -450,12 +469,13 @@ class AdvancedCryptoBot:
         if df is None or df.empty:
             return None
 
-        # Run all analyses in parallel
-        ta_task = asyncio.create_task(asyncio.to_thread(self.ta_analyzer.full_analysis, df.copy()))
-        sentiment_task = asyncio.create_task(self.sentiment_analyzer.analyze(symbol))
-        prediction_task = asyncio.create_task(self.prediction_engine.predict(symbol, df.copy()))
+        tasks = {
+            'ta': asyncio.create_task(asyncio.to_thread(self.ta_analyzer.full_analysis, df.copy())),
+            'sentiment': asyncio.create_task(self.sentiment_analyzer.analyze(symbol)),
+            'prediction': asyncio.create_task(self.prediction_engine.predict(symbol, df.copy()))
+        }
         
-        results = await asyncio.gather(ta_task, sentiment_task, prediction_task)
+        results = await asyncio.gather(*tasks.values())
         
         analysis = {
             'symbol': symbol,
@@ -465,11 +485,9 @@ class AdvancedCryptoBot:
             'prediction': results[2],
         }
 
-        # Generate signal
         signal_info = self.signal_generator.generate(analysis)
         analysis['signal'] = signal_info
 
-        # Save signal to DB
         session = get_db_session()
         try:
             user = get_or_create_user(session, user_chat_id)
@@ -494,10 +512,7 @@ class AdvancedCryptoBot:
     async def generate_chart(self, symbol: str, df: pd.DataFrame, analysis: dict) -> InputFile:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
         
-        # Candlestick
         fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'), row=1, col=1)
-        
-        # Volume
         fig.add_trace(go.Bar(x=df.index, y=df['volume'], name='Volume', marker_color='rgba(80,120,220,0.6)'), row=2, col=1)
 
         signal = analysis['signal']['signal']
@@ -524,7 +539,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     session = get_db_session()
     try:
-        # Use user.id for chat_id to be consistent
         get_or_create_user(session, user.id, user.username)
     finally:
         session.close()
@@ -550,21 +564,18 @@ async def analyze_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     symbol = update.message.text.strip().upper()
     chat_id = update.effective_chat.id
     
-    # Show typing action
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     msg = await update.message.reply_text(f"در حال تحلیل {symbol}، لطفاً کمی صبر کنید...")
 
-    bot_instance = context.application.bot_instance
+    bot_instance: AdvancedCryptoBot = context.application.bot_instance
     analysis = await bot_instance.analyze_symbol(symbol, chat_id)
 
     if not analysis:
         await msg.edit_text(f"متاسفانه تحلیل {symbol} با خطا مواجه شد. لطفاً از صحت نام نماد مطمئن شوید.")
-        # After an error, go back to the main menu
         keyboard = [[InlineKeyboardButton("بازگشت به منو", callback_data='main_menu')]]
         await msg.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
         return START_ROUTES
 
-    # Build response message
     signal = analysis['signal']
     ta = analysis['technical_analysis']
     senti = analysis['sentiment_analysis']
@@ -578,21 +589,24 @@ async def analyze_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"<b>{signal_emoji} سیگنال نهایی: {signal['signal']}</b> (اطمینان: {signal['confidence']:.1%})\n\n"
         f"<b> جزئیات تحلیل: </b>\n"
         f"  - 📉 تکنیکال: روند <b>{ta['trend']}</b>، مومنتوم <b>{ta['momentum']}</b>\n"
-        f"  - 🗣️ احساسات: <b>{senti['sentiment']}</b> (امتیاز: {senti['score']:.2f})\n"
+        f"  - 🗣️ احساسات: <b>{senti['summary']}</b>\n"
         f"  - 🤖 پیش‌بینی AI: <b>{pred['prediction']}</b> (اطمینان: {pred['confidence']:.1%})\n"
     )
 
     df = await bot_instance.fetch_ohlcv(symbol, '1h')
-    chart = await bot_instance.generate_chart(symbol, df, analysis)
-    
-    await context.bot.send_photo(
-        chat_id=chat_id,
-        photo=chart,
-        caption=text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحلیل نماد دیگر", callback_data='analyze')]])
-    )
-    await msg.delete() # Delete "در حال تحلیل..." message
+    if df is not None:
+        chart = await bot_instance.generate_chart(symbol, df, analysis)
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=chart,
+            caption=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحلیل نماد دیگر", callback_data='analyze')]])
+        )
+        await msg.delete()
+    else: # Fallback if chart generation fails
+        await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحلیل نماد دیگر", callback_data='analyze')]]))
+        
     return START_ROUTES
 
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -610,16 +624,14 @@ async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return START_ROUTES
 
 # ==============================================================================
-# 9. WEB DASHBOARD (Simplified)
+# 9. WEB DASHBOARD (Simplified Health Check)
 # ==============================================================================
 class WebDashboard:
-    def __init__(self, bot):
-        self.bot = bot
+    def __init__(self):
         self.app = web.Application()
         self.app.router.add_get('/', self.index)
 
     async def index(self, request):
-        # A simple health check page
         return web.Response(text="Crypto AI Bot is running.", content_type="text/html")
 
     async def run(self):
@@ -629,7 +641,6 @@ class WebDashboard:
         await site.start()
         logger.info(f"Web dashboard running on http://0.0.0.0:{S.WEB_PORT}")
 
-
 # ==============================================================================
 # 10. MAIN EXECUTION
 # ==============================================================================
@@ -638,46 +649,41 @@ async def main():
         logger.critical("FATAL: TELEGRAM_BOT_TOKEN is not set!")
         sys.exit(1)
 
-    # Initialize bot instance
     bot_instance = AdvancedCryptoBot()
     
-    # Setup Telegram Application
     app = Application.builder().token(S.TELEGRAM_BOT_TOKEN).build()
-    app.bot_instance = bot_instance # Attach bot instance to the application context
+    app.bot_instance = bot_instance
 
-    # Conversation handler for interactive menus
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             START_ROUTES: [
                 CallbackQueryHandler(ask_for_symbol, pattern='^analyze$'),
                 CallbackQueryHandler(back_to_menu, pattern='^main_menu$'),
-                # Add other main menu buttons here
             ],
             GETTING_SYMBOL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_and_reply)
             ],
         },
         fallbacks=[CommandHandler('start', start)],
-        # Allow re-entering the conversation
         allow_reentry=True
     )
     app.add_handler(conv_handler)
 
-    # Run Web Dashboard if enabled
     if S.ENABLE_WEB_DASHBOARD:
-        dashboard = WebDashboard(bot_instance)
-        # Run dashboard in the background
+        dashboard = WebDashboard()
         asyncio.create_task(dashboard.run())
         
-    # Start polling
-    logger.info("Bot is starting to poll...")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    
-    # Keep the script running
-    await asyncio.Event().wait()
+    try:
+        logger.info("Bot is starting to poll...")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        await asyncio.Event().wait() # Keep it running
+    finally:
+        await bot_instance.close_exchange()
+        await app.updater.stop()
+        await app.stop()
 
 
 if __name__ == '__main__':
