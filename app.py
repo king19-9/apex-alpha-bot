@@ -17,7 +17,7 @@ import json
 import datetime
 import re
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field  # <<< FIX: 'field' has been added here
 from typing import Any, Dict, List, Optional, Tuple
 
 # Third-party imports
@@ -114,7 +114,6 @@ except Exception as e:
 # Database Setup
 Base = declarative_base()
 
-# ... (Database Models: User, Signal, etc. - همان کد قبلی بدون تغییر)
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -199,8 +198,6 @@ async def fetch_with_retry(session: aiohttp.ClientSession, url: str, params: dic
 # 5. CORE ANALYSIS MODULES (TA, On-Chain, Sentiment, AI Prediction)
 # ==============================================================================
 class AdvancedTechnicalAnalyzer:
-    # ... (کلاس تحلیل تکنیکال شما بسیار خوب بود و بدون تغییر عمده باقی می‌ماند)
-    # ... (فقط اطمینان حاصل می‌کنیم که خروجی‌ها تمیز هستند)
     def calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
         delta = prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -216,7 +213,7 @@ class AdvancedTechnicalAnalyzer:
         return macd_line, signal_line
 
     def full_analysis(self, df: pd.DataFrame) -> dict:
-        if df.empty or len(df) < 26: # Minimum length for MACD
+        if df.empty or len(df) < 200: # Need 200 for SMA
              return {'trend': 'unknown', 'momentum': 'unknown', 'summary': 'Insufficient data'}
         
         close_prices = df['close']
@@ -428,9 +425,12 @@ class AdvancedCryptoBot:
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 300) -> Optional[pd.DataFrame]:
         cache_key = f"ohlcv_{symbol}_{timeframe}"
-        cached = cache_get(cache_key)
-        if cached:
-            return pd.read_json(io.StringIO(cached['df']))
+        cached_data = cache_get(cache_key)
+        if cached_data:
+            df = pd.read_json(io.StringIO(cached_data['df']))
+            # Ensure the index is datetime
+            df.index = pd.to_datetime(df.index)
+            return df
 
         try:
             pair = f"{symbol.upper()}/USDT"
@@ -524,6 +524,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     session = get_db_session()
     try:
+        # Use user.id for chat_id to be consistent
         get_or_create_user(session, user.id, user.username)
     finally:
         session.close()
@@ -558,6 +559,9 @@ async def analyze_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if not analysis:
         await msg.edit_text(f"متاسفانه تحلیل {symbol} با خطا مواجه شد. لطفاً از صحت نام نماد مطمئن شوید.")
+        # After an error, go back to the main menu
+        keyboard = [[InlineKeyboardButton("بازگشت به منو", callback_data='main_menu')]]
+        await msg.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
         return START_ROUTES
 
     # Build response message
@@ -586,7 +590,7 @@ async def analyze_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         photo=chart,
         caption=text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت به منو", callback_data='main_menu')]])
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("تحلیل نماد دیگر", callback_data='analyze')]])
     )
     await msg.delete() # Delete "در حال تحلیل..." message
     return START_ROUTES
@@ -655,6 +659,8 @@ async def main():
             ],
         },
         fallbacks=[CommandHandler('start', start)],
+        # Allow re-entering the conversation
+        allow_reentry=True
     )
     app.add_handler(conv_handler)
 
