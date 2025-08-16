@@ -14,3 +14,4 @@ kaleido
 tweepy
 requests
 psycopg2-binary
+apscheduler
