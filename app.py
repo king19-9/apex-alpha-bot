@@ -146,30 +146,14 @@ if not S.DATABASE_URL:
 try:
     engine = create_engine(S.DATABASE_URL)
     Session = sessionmaker(bind=engine)
-    
-    # ##################################################################
-    # ### کد موقت برای حذف تمام جداول - بعد از یک بار اجرا پاک شود! ###
-    # ##################################################################
-    logger.warning("ATTENTION: Dropping all tables from the database NOW!")
-    try:
-        # We need a non-async connection for this management task
-        sync_engine = create_engine(S.DATABASE_URL)
-        Base.metadata.drop_all(sync_engine)
-        logger.info("All tables dropped successfully.")
-    except Exception as e:
-        logger.error(f"Could not drop tables: {e}")
-    # ##################################################################
-
     Base.metadata.create_all(engine)
-    logger.info("Database tables created (or verified).")
-
+    logger.info("Database connected and tables created.")
 except Exception as e:
-    logger.critical(f"Database connection/setup failed. Error: {e}", exc_info=True)
+    logger.critical(f"Database connection failed. Is the driver installed and DATABASE_URL correct? Error: {e}", exc_info=True)
     sys.exit(1)
 
 # ==============================================================================
-# 4. HELPER FUNCTIONS (بخش‌های بعدی کد بدون تغییر هستند)
-# ... (کد از اینجا به بعد با نسخه قبلی یکسان است)
+# 4. HELPER FUNCTIONS
 # ==============================================================================
 def get_db_session():
     return Session()
