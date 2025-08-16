@@ -13,4 +13,3 @@ plotly
 kaleido
 tweepy
 requests
-GradientBoostingClassifier
