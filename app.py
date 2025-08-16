@@ -1,30 +1,35 @@
 # -*- coding: utf-8 -*-
-# Advanced 24/7 Crypto AI Bot: Multi-chain + Advanced TA + AI + Risk Management
-# Complete version with all improvements and new features
+"""
+Advanced 24/7 Crypto AI Bot - Complete Version
+Features: Multi-chain Analysis, Advanced TA, AI Predictions, Risk Management, Telegram Bot, Web Dashboard
+"""
 
-import os, sys, time, asyncio, statistics, random, logging, json, datetime, re
+import os
+import sys
+import time
+import asyncio
+import logging
+import json
+import datetime
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+# Third-party imports
 import aiohttp
 from aiohttp import web
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import io
-import redis
-from datetime import timedelta
 import ccxt.async_support as ccxt
 import websockets
 import json as _json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, ConversationHandler
 from telegram.constants import ChatAction
-from sqlalchemy import create_engine, text, bindparam
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, text, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Text
-import plotly.graph_objects as go
-import plotly.express as px
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.exc import SQLAlchemyError
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import TimeSeriesSplit
@@ -33,33 +38,54 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 from joblib import dump, load
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import requests
-from bs4 import BeautifulSoup
+import redis
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import io
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 import tweepy
+from bs4 import BeautifulSoup
+import requests
 
 # Initialize Redis
-redis_client = redis.Redis(host=os.getenv('REDIS_HOST', 'localhost'), 
-                          port=int(os.getenv('REDIS_PORT', 6379)), 
-                          db=0, decode_responses=True)
+try:
+    redis_client = redis.Redis(
+        host=os.getenv('REDIS_HOST', 'localhost'),
+        port=int(os.getenv('REDIS_PORT', 6379)),
+        db=0,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5
+    )
+    redis_available = True
+except Exception as e:
+    logging.warning(f"Redis not available: {e}")
+    redis_available = False
+    redis_client = None
 
-# Base for SQLAlchemy models
+# Database Setup
 Base = declarative_base()
 
-# Database Models
 class User(Base):
     __tablename__ = 'users'
-    
     id = Column(Integer, primary_key=True)
     chat_id = Column(Integer, unique=True)
     username = Column(String(50))
     preferences = Column(Text)  # JSON string
     risk_level = Column(String(20), default='medium')
     max_leverage = Column(Float, default=5.0)
+    balance = Column(Float, default=10000.0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    signals = relationship("Signal", back_populates="user")
+    watchlist = relationship("Watchlist", back_populates="user")
+    performance = relationship("Performance", back_populates="user")
 
 class Signal(Base):
     __tablename__ = 'signals'
-    
     id = Column(Integer, primary_key=True)
     symbol = Column(String(20))
     signal_type = Column(String(10))  # BUY/SELL/HOLD
@@ -67,36 +93,73 @@ class Signal(Base):
     price = Column(Float)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
     source = Column(String(50))
-    user_id = Column(Integer)
+    user_id = Column(Integer, ForeignKey('users.id'))
     evaluated = Column(Boolean, default=False)
     result = Column(Float)
+    timeframe = Column(String(10), default='1h')
+    
+    # Relationships
+    user = relationship("User", back_populates="signals")
 
 class Watchlist(Base):
     __tablename__ = 'watchlist'
-    
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer)
+    user_id = Column(Integer, ForeignKey('users.id'))
     symbol = Column(String(20))
     added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="watchlist")
 
 class Performance(Base):
     __tablename__ = 'performance'
-    
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer)
+    user_id = Column(Integer, ForeignKey('users.id'))
     total_signals = Column(Integer, default=0)
     successful_signals = Column(Integer, default=0)
     avg_return = Column(Float, default=0.0)
     sharpe_ratio = Column(Float, default=0.0)
     max_drawdown = Column(Float, default=0.0)
+    win_rate = Column(Float, default=0.0)
+    profit_factor = Column(Float, default=0.0)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="performance")
+
+class MarketData(Base):
+    __tablename__ = 'market_data'
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), unique=True)
+    price = Column(Float)
+    change_24h = Column(Float)
+    volume_24h = Column(Float)
+    market_cap = Column(Float)
+    last_update = Column(DateTime, default=datetime.datetime.utcnow)
+
+class OnChainTransaction(Base):
+    __tablename__ = 'onchain_transactions'
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20))
+    chain = Column(String(20))
+    hash = Column(String(66))
+    from_address = Column(String(42))
+    to_address = Column(String(42))
+    value_usd = Column(Float)
+    timestamp = Column(DateTime)
+    direction = Column(String(10))  # BUY/SELL/MOVE
 
 # Settings Class
 @dataclass
 class Settings:
-    # API Keys
+    # Bot Configuration
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID")
+    
+    # Database
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///crypto_bot.db")
+    
+    # API Keys
     COINGECKO_API_KEY: str = os.getenv("COINGECKO_API_KEY")
     COINMARKETCAP_API_KEY: str = os.getenv("COINMARKETCAP_API_KEY")
     CRYPTOCOMPARE_API_KEY: str = os.getenv("CRYPTOCOMPARE_API_KEY")
@@ -108,13 +171,12 @@ class Settings:
     BSCSCAN_API_KEY: str = os.getenv("BSCSCAN_API_KEY")
     DEXSCREENER_API_KEY: str = os.getenv("DEXSCREENER_API_KEY")
     TWITTER_BEARER_TOKEN: str = os.getenv("TWITTER_BEARER_TOKEN")
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     
     # Bot Settings
     OFFLINE_MODE: bool = os.getenv("OFFLINE_MODE", "false").lower() == "true"
     EXCHANGES: List[str] = os.getenv("EXCHANGES", "binance,kucoin,bybit,bitfinex,gateio,bitget").split(",")
-    MAX_COINS: int = int(os.getenv("MAX_COINS", "500"))
-    UNIVERSE_MAX_PAGES: int = int(os.getenv("UNIVERSE_MAX_PAGES", "10"))
+    MAX_COINS: int = int(os.getenv("MAX_COINS", "1000"))
+    UNIVERSE_MAX_PAGES: int = int(os.getenv("UNIVERSE_MAX_PAGES", "20"))
     TIMEFRAMES: List[str] = os.getenv("TIMEFRAMES", "1m,5m,15m,1h,4h,1d").split(",")
     
     # Performance Settings
@@ -126,6 +188,7 @@ class Settings:
     ENABLE_ADVANCED_TA: bool = os.getenv("ENABLE_ADVANCED_TA", "true").lower() == "true"
     ENABLE_ONCHAIN: bool = os.getenv("ENABLE_ONCHAIN", "true").lower() == "true"
     ENABLE_SENTIMENT: bool = os.getenv("ENABLE_SENTIMENT", "true").lower() == "true"
+    ENABLE_PREDICTION: bool = os.getenv("ENABLE_PREDICTION", "true").lower() == "true"
     ENABLE_RISK_MANAGEMENT: bool = os.getenv("ENABLE_RISK_MANAGEMENT", "true").lower() == "true"
     
     # Risk Management
@@ -140,10 +203,7 @@ class Settings:
     
     # On-chain Settings
     ONCHAIN_MIN_USD: float = float(os.getenv("ONCHAIN_MIN_USD", "500000"))
-    ONCHAIN_CHAINS: List[str] = os.getenv("ONCHAIN_CHAINS", "ethereum,polygon,binance-smart-chain,avalanche,arbitrum").split(",")
-    
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///bot.db")
+    ONCHAIN_CHAINS: List[str] = os.getenv("ONCHAIN_CHAINS", "ethereum,polygon,binance-smart-chain,avalanche,arbitrum,fantom").split(",")
     
     # Web Dashboard
     ENABLE_WEB_DASHBOARD: bool = os.getenv("ENABLE_WEB_DASHBOARD", "true").lower() == "true"
@@ -156,34 +216,48 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log'),
+        logging.FileHandler('crypto_bot.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Database Setup
-engine = create_engine(S.DATABASE_URL, pool_pre_ping=True)
-Session = sessionmaker(bind=engine)
-Base.metadata.create_all(engine)
+try:
+    engine = create_engine(S.DATABASE_URL, pool_pre_ping=True, pool_size=20, max_overflow=30)
+    Session = sessionmaker(bind=engine)
+    Base.metadata.create_all(engine)
+    logger.info("Database connected successfully")
+except Exception as e:
+    logger.error(f"Database connection failed: {e}")
+    sys.exit(1)
 
 # Helper Functions
 def get_user_session(chat_id: int):
     session = Session()
-    user = session.query(User).filter_by(chat_id=chat_id).first()
-    if not user:
-        user = User(chat_id=chat_id)
-        session.add(user)
-        session.commit()
-    return session, user
+    try:
+        user = session.query(User).filter_by(chat_id=chat_id).first()
+        if not user:
+            user = User(chat_id=chat_id)
+            session.add(user)
+            session.commit()
+        return session, user
+    except SQLAlchemyError as e:
+        session.rollback()
+        logger.error(f"Database error in get_user_session: {e}")
+        return None, None
 
 def cache_with_redis(key: str, value: Any, ttl: int = 300):
+    if not redis_available:
+        return
     try:
-        redis_client.setex(key, ttl, json.dumps(value))
+        redis_client.setex(key, ttl, json.dumps(value, default=str))
     except Exception as e:
         logger.error(f"Redis error: {e}")
 
 def get_from_cache(key: str):
+    if not redis_available:
+        return None
     try:
         cached = redis_client.get(key)
         if cached:
@@ -206,18 +280,51 @@ async def retry_request(func, *args, **kwargs):
 # Advanced Technical Analysis Module
 class AdvancedTechnicalAnalyzer:
     def __init__(self):
-        self.support_resistance_levels = {}
-        self.order_blocks = {}
-        self.liquidity_zones = {}
-        self.market_structure = {}
+        self.indicators_cache = {}
         
-    def detect_order_blocks(self, df: pd.DataFrame, lookback: int = 50):
-        """Detect order blocks in price action"""
+    def calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+    
+    def calculate_macd(self, prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple:
+        ema_fast = prices.ewm(span=fast).mean()
+        ema_slow = prices.ewm(span=slow).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal).mean()
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
+    
+    def calculate_bollinger_bands(self, prices: pd.Series, period: int = 20, std_dev: float = 2) -> tuple:
+        sma = prices.rolling(window=period).mean()
+        std = prices.rolling(window=period).std()
+        upper_band = sma + (std * std_dev)
+        lower_band = sma - (std * std_dev)
+        return upper_band, sma, lower_band
+    
+    def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        return true_range.rolling(window=period).mean()
+    
+    def calculate_stochastic(self, df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> tuple:
+        low_min = df['low'].rolling(window=k_period).min()
+        high_max = df['high'].rolling(window=k_period).max()
+        k_percent = 100 * ((df['close'] - low_min) / (high_max - low_min))
+        d_percent = k_percent.rolling(window=d_period).mean()
+        return k_percent, d_percent
+    
+    def detect_order_blocks(self, df: pd.DataFrame, lookback: int = 50) -> dict:
         bullish_blocks = []
         bearish_blocks = []
         
         for i in range(lookback, len(df)):
-            # Bullish Order Block: Strong down candle followed by strong up move
+            # Bullish Order Block
             if (df.iloc[i-1]['close'] < df.iloc[i-1]['open'] and  # Bearish candle
                 df.iloc[i]['close'] > df.iloc[i]['open'] and      # Bullish candle
                 df.iloc[i]['close'] > df.iloc[i-2]['high']):      # Breaks previous high
@@ -226,10 +333,11 @@ class AdvancedTechnicalAnalyzer:
                     'index': i-1,
                     'high': df.iloc[i-1]['high'],
                     'low': df.iloc[i-1]['low'],
+                    'close': df.iloc[i-1]['close'],
                     'type': 'bullish'
                 })
             
-            # Bearish Order Block: Strong up candle followed by strong down move
+            # Bearish Order Block
             if (df.iloc[i-1]['close'] > df.iloc[i-1]['open'] and  # Bullish candle
                 df.iloc[i]['close'] < df.iloc[i]['open'] and      # Bearish candle
                 df.iloc[i]['close'] < df.iloc[i-2]['low']):      # Breaks previous low
@@ -238,38 +346,40 @@ class AdvancedTechnicalAnalyzer:
                     'index': i-1,
                     'high': df.iloc[i-1]['high'],
                     'low': df.iloc[i-1]['low'],
+                    'close': df.iloc[i-1]['close'],
                     'type': 'bearish'
                 })
         
         return {'bullish': bullish_blocks, 'bearish': bearish_blocks}
     
-    def detect_liquidity_zones(self, df: pd.DataFrame, window: int = 20):
-        """Detect liquidity zones where stop hunts might occur"""
+    def detect_liquidity_zones(self, df: pd.DataFrame, window: int = 20) -> dict:
         high_zones = []
         low_zones = []
         
-        # Find swing highs and lows
         for i in range(window, len(df)-window):
             # Swing High
             if df.iloc[i]['high'] == df.iloc[i-window:i+window]['high'].max():
+                strength = len([x for x in df.iloc[i-window:i+window]['high'] 
+                              if abs(x - df.iloc[i]['high']) < 0.01])
                 high_zones.append({
                     'price': df.iloc[i]['high'],
                     'index': i,
-                    'strength': len([x for x in df.iloc[i-window:i+window]['high'] if abs(x - df.iloc[i]['high']) < 0.01])
+                    'strength': strength
                 })
             
             # Swing Low
             if df.iloc[i]['low'] == df.iloc[i-window:i+window]['low'].min():
+                strength = len([x for x in df.iloc[i-window:i+window]['low'] 
+                              if abs(x - df.iloc[i]['low']) < 0.01])
                 low_zones.append({
                     'price': df.iloc[i]['low'],
                     'index': i,
-                    'strength': len([x for x in df.iloc[i-window:i+window]['low'] if abs(x - df.iloc[i]['low']) < 0.01])
+                    'strength': strength
                 })
         
         return {'high_zones': high_zones, 'low_zones': low_zones}
     
-    def detect_market_structure(self, df: pd.DataFrame):
-        """Analyze market structure for higher highs/higher lows or lower highs/lower lows"""
+    def detect_market_structure(self, df: pd.DataFrame) -> dict:
         structure = {
             'trend': 'ranging',
             'higher_highs': [],
@@ -295,14 +405,14 @@ class AdvancedTechnicalAnalyzer:
         
         # Analyze structure
         if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-            # Check for uptrend
+            # Uptrend
             if (swing_highs[-1][1] > swing_highs[-2][1] and 
                 swing_lows[-1][1] > swing_lows[-2][1]):
                 structure['trend'] = 'uptrend'
                 structure['higher_highs'] = swing_highs
                 structure['higher_lows'] = swing_lows
             
-            # Check for downtrend
+            # Downtrend
             elif (swing_highs[-1][1] < swing_highs[-2][1] and 
                   swing_lows[-1][1] < swing_lows[-2][1]):
                 structure['trend'] = 'downtrend'
@@ -311,13 +421,12 @@ class AdvancedTechnicalAnalyzer:
         
         return structure
     
-    def detect_supply_demand_zones(self, df: pd.DataFrame, lookback: int = 50):
-        """Detect supply and demand zones"""
+    def detect_supply_demand_zones(self, df: pd.DataFrame, lookback: int = 50) -> dict:
         supply_zones = []
         demand_zones = []
         
         for i in range(lookback, len(df)):
-            # Demand Zone: Strong rally from a consolidation area
+            # Demand Zone
             if (df.iloc[i]['close'] > df.iloc[i-1]['close'] * 1.02 and  # 2% up move
                 df.iloc[i]['volume'] > df.iloc[i-1]['volume'] * 1.5):  # High volume
                 
@@ -327,7 +436,7 @@ class AdvancedTechnicalAnalyzer:
                     'index': i-1
                 })
             
-            # Supply Zone: Strong drop from a consolidation area
+            # Supply Zone
             if (df.iloc[i]['close'] < df.iloc[i-1]['close'] * 0.98 and  # 2% down move
                 df.iloc[i]['volume'] > df.iloc[i-1]['volume'] * 1.5):  # High volume
                 
@@ -339,8 +448,7 @@ class AdvancedTechnicalAnalyzer:
         
         return {'supply': supply_zones, 'demand': demand_zones}
     
-    def detect_inside_bars(self, df: pd.DataFrame):
-        """Detect inside bar patterns"""
+    def detect_inside_bars(self, df: pd.DataFrame) -> list:
         inside_bars = []
         
         for i in range(1, len(df)):
@@ -356,8 +464,7 @@ class AdvancedTechnicalAnalyzer:
         
         return inside_bars
     
-    def analyze_session_patterns(self, df: pd.DataFrame):
-        """Analyze price behavior during different trading sessions"""
+    def analyze_session_patterns(self, df: pd.DataFrame) -> dict:
         sessions = {
             'asia': {'start': 0, 'end': 8},
             'europe': {'start': 8, 'end': 16},
@@ -380,18 +487,14 @@ class AdvancedTechnicalAnalyzer:
         
         return session_analysis
     
-    def detect_decision_zones(self, df: pd.DataFrame):
-        """Detect areas where price decisions are made"""
+    def detect_decision_zones(self, df: pd.DataFrame) -> list:
         decision_zones = []
         
-        # Find areas of high volume and price consolidation
         for i in range(10, len(df)-10):
             window = df.iloc[i-10:i+10]
             
-            # Check for consolidation (low volatility)
+            # Check for consolidation
             volatility = (window['high'].max() - window['low'].min()) / window['close'].mean()
-            
-            # Check for high volume
             avg_volume = window['volume'].mean()
             
             if volatility < 0.02 and avg_volume > df['volume'].quantile(0.7):
@@ -404,8 +507,7 @@ class AdvancedTechnicalAnalyzer:
         
         return decision_zones
     
-    def full_analysis(self, df: pd.DataFrame):
-        """Perform complete technical analysis"""
+    def full_analysis(self, df: pd.DataFrame) -> dict:
         results = {
             'order_blocks': self.detect_order_blocks(df),
             'liquidity_zones': self.detect_liquidity_zones(df),
@@ -416,6 +518,16 @@ class AdvancedTechnicalAnalyzer:
             'decision_zones': self.detect_decision_zones(df)
         }
         
+        # Calculate indicators
+        if not df.empty:
+            results['indicators'] = {
+                'rsi': self.calculate_rsi(df['close']).iloc[-1],
+                'macd': self.calculate_macd(df['close'])[0].iloc[-1],
+                'bollinger': self.calculate_bollinger_bands(df['close']),
+                'atr': self.calculate_atr(df).iloc[-1],
+                'stochastic': self.calculate_stochastic(df)[0].iloc[-1]
+            }
+        
         return results
 
 # Enhanced Risk Management Module
@@ -423,30 +535,26 @@ class AdvancedRiskManager:
     def __init__(self):
         self.position_sizing_methods = ['fixed_risk', 'kelly', 'volatility_adjusted']
         self.risk_metrics = {}
-        
+    
     def calculate_position_size(self, account_balance: float, risk_percent: float, 
                               entry_price: float, stop_loss: float, method: str = 'fixed_risk',
-                              volatility: float = None, liquidity: float = None):
-        """Calculate optimal position size based on multiple factors"""
+                              volatility: float = None, liquidity: float = None) -> float:
         risk_amount = account_balance * (risk_percent / 100)
         
         if method == 'fixed_risk':
-            # Fixed fractional risk
             position_size = risk_amount / abs(entry_price - stop_loss)
         
         elif method == 'kelly':
-            # Kelly Criterion
             win_rate = self.risk_metrics.get('win_rate', 0.5)
             avg_win = self.risk_metrics.get('avg_win', 1.0)
             avg_loss = self.risk_metrics.get('avg_loss', 1.0)
             
             kelly_fraction = (win_rate * avg_win - (1 - win_rate) * avg_loss) / avg_win
-            kelly_fraction = max(0, min(kelly_fraction, 0.25))  # Cap at 25%
+            kelly_fraction = max(0, min(kelly_fraction, 0.25))
             
             position_size = (account_balance * kelly_fraction) / entry_price
         
         elif method == 'volatility_adjusted':
-            # Adjust position size based on market volatility
             if volatility:
                 volatility_factor = 1 / (1 + volatility)
                 position_size = (risk_amount * volatility_factor) / abs(entry_price - stop_loss)
@@ -461,47 +569,31 @@ class AdvancedRiskManager:
         return max(0, position_size)
     
     def calculate_optimal_leverage(self, volatility: float, account_balance: float, 
-                                  position_size: float, max_leverage: float = None):
-        """Calculate optimal leverage based on volatility"""
+                                  position_size: float, max_leverage: float = None) -> float:
         if not max_leverage:
             max_leverage = S.DEFAULT_MAX_LEVERAGE
         
-        # Lower leverage in high volatility environments
         volatility_adjustment = 1 / (1 + volatility)
-        
-        # Calculate leverage based on position size relative to account
         base_leverage = (position_size * S.DEFAULT_MAX_LEVERAGE) / account_balance
-        
-        # Apply volatility adjustment
         optimal_leverage = base_leverage * volatility_adjustment
         
         return min(optimal_leverage, max_leverage)
     
     def dynamic_stop_loss(self, df: pd.DataFrame, entry_price: float, 
-                         direction: str, atr_period: int = 14):
-        """Calculate dynamic stop loss based on market conditions"""
-        # Calculate ATR
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
+                         direction: str, atr_period: int = 14) -> float:
+        atr = self.calculate_atr(df, atr_period).iloc[-1]
         
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        atr = true_range.rolling(window=atr_period).mean().iloc[-1]
-        
-        # Calculate stop distance based on ATR
         if direction == 'long':
-            stop_distance = atr * 2.5  # 2.5 ATR for long positions
+            stop_distance = atr * 2.5
             stop_loss = entry_price - stop_distance
         else:
-            stop_distance = atr * 2.5  # 2.5 ATR for short positions
+            stop_distance = atr * 2.5
             stop_loss = entry_price + stop_distance
         
         return stop_loss
     
     def calculate_risk_reward_ratio(self, entry_price: float, stop_loss: float, 
-                                  take_profit: float):
-        """Calculate risk/reward ratio"""
+                                  take_profit: float) -> float:
         risk = abs(entry_price - stop_loss)
         reward = abs(take_profit - entry_price)
         
@@ -511,17 +603,22 @@ class AdvancedRiskManager:
         return reward / risk
     
     def portfolio_heat_check(self, current_positions: List[Dict], 
-                           new_position_size: float, account_balance: float):
-        """Check if adding new position exceeds portfolio heat limits"""
+                           new_position_size: float, account_balance: float) -> bool:
         total_risk = sum(pos['size'] * pos['risk_percent'] for pos in current_positions)
         new_position_risk = new_position_size * S.DEFAULT_RISK_PER_TRADE
         
         total_portfolio_risk = (total_risk + new_position_risk) / account_balance
-        
-        # Maximum 20% portfolio risk at any time
         max_portfolio_risk = 0.20
         
         return total_portfolio_risk <= max_portfolio_risk
+    
+    def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        return true_range.rolling(window=period).mean()
 
 # Enhanced On-chain Analysis Module
 class EnhancedOnChainAnalyzer:
@@ -541,6 +638,21 @@ class EnhancedOnChainAnalyzer:
                 'url': 'https://api.bscscan.com/api',
                 'key': S.BSCSCAN_API_KEY,
                 'explorer': 'https://bscscan.com'
+            },
+            'avalanche': {
+                'url': 'https://api.snowtrace.io/api',
+                'key': os.getenv('AVALANCHE_API_KEY'),
+                'explorer': 'https://snowtrace.io'
+            },
+            'arbitrum': {
+                'url': 'https://api.arbiscan.io/api',
+                'key': os.getenv('ARBITRUM_API_KEY'),
+                'explorer': 'https://arbiscan.io'
+            },
+            'fantom': {
+                'url': 'https://api.ftmscan.com/api',
+                'key': os.getenv('FANTOM_API_KEY'),
+                'explorer': 'https://ftmscan.com'
             }
         }
         
@@ -548,17 +660,38 @@ class EnhancedOnChainAnalyzer:
             'USDT': {
                 'ethereum': '0xdAC17F958D2ee523a2206206994597C13D831ec7',
                 'polygon': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
-                'binance-smart-chain': '0x55d398326f99059fF775485246999027B3197955'
+                'binance-smart-chain': '0x55d398326f99059fF775485246999027B3197955',
+                'avalanche': '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7',
+                'arbitrum': '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9',
+                'fantom': '0x049d68029688eAbF473097a2fC38ef61633A3C7A'
             },
             'USDC': {
                 'ethereum': '0xA0b86a33E6417aAb7b6DbCBbe9FD4E89c0778a4B',
                 'polygon': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-                'binance-smart-chain': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'
+                'binance-smart-chain': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
+                'avalanche': '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
+                'arbitrum': '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8',
+                'fantom': '0x04068DA6C83AFCFA0e13ba15A6696662335D5B75'
+            },
+            'BTC': {
+                'ethereum': '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599',
+                'polygon': '0x1BFD67037B42Cf70AcE5DFE484DdC4D164933822',
+                'binance-smart-chain': '0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c',
+                'avalanche': '0x152b9d0FdC40C096757F570A51E49Fbd288FE6dE',
+                'arbitrum': '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+                'fantom': '0x321162Cd933E2Be498Cd2267a90534A804051b11'
+            },
+            'ETH': {
+                'ethereum': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+                'polygon': '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619',
+                'binance-smart-chain': '0x2170Ed0880ac9A755fd29B2688956BD959F933F8',
+                'avalanche': '0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB',
+                'arbitrum': '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+                'fantom': '0x74b23882a30290451A17c44f4F05243b6b58C76d'
             }
         }
     
-    async def get_large_transactions(self, symbol: str, min_usd: float = 500000):
-        """Get large transactions from multiple chains"""
+    async def get_large_transactions(self, symbol: str, min_usd: float = 500000) -> list:
         all_transactions = []
         
         for chain in S.ONCHAIN_CHAINS:
@@ -580,9 +713,11 @@ class EnhancedOnChainAnalyzer:
         
         return all_transactions
     
-    async def _fetch_chain_transactions(self, chain: str, contract_address: str, min_usd: float):
-        """Fetch transactions from a specific chain"""
-        api_config = self.chain_apis[chain]
+    async def _fetch_chain_transactions(self, chain: str, contract_address: str, min_usd: float) -> list:
+        api_config = self.chain_apis.get(chain)
+        if not api_config:
+            return []
+        
         url = f"{api_config['url']}/api"
         
         params = {
@@ -595,42 +730,45 @@ class EnhancedOnChainAnalyzer:
             'apikey': api_config['key']
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                data = await response.json()
-                
-                if data.get('status') != '1':
-                    return []
-                
-                transactions = []
-                for tx in data.get('result', []):
-                    value = float(tx.get('value', 0))
-                    # Convert token value to USD (simplified)
-                    usd_value = value * 1.0  # Should use actual price
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=30) as response:
+                    data = await response.json()
                     
-                    if usd_value >= min_usd:
-                        transactions.append({
-                            'hash': tx.get('hash'),
-                            'from': tx.get('from'),
-                            'to': tx.get('to'),
-                            'value': usd_value,
-                            'timestamp': int(tx.get('timeStamp')),
-                            'chain': chain,
-                            'explorer_url': f"{api_config['explorer']}/tx/{tx.get('hash')}"
-                        })
-                
-                return transactions
+                    if data.get('status') != '1':
+                        return []
+                    
+                    transactions = []
+                    for tx in data.get('result', []):
+                        value = float(tx.get('value', 0))
+                        decimals = int(tx.get('tokenDecimal', 18))
+                        usd_value = value / (10 ** decimals)
+                        
+                        if usd_value >= min_usd:
+                            transactions.append({
+                                'hash': tx.get('hash'),
+                                'from': tx.get('from'),
+                                'to': tx.get('to'),
+                                'value': usd_value,
+                                'timestamp': int(tx.get('timeStamp')),
+                                'chain': chain,
+                                'explorer_url': f"{api_config['explorer']}/tx/{tx.get('hash')}"
+                            })
+                    
+                    return transactions
+        except Exception as e:
+            logger.error(f"Error fetching {chain} transactions: {e}")
+            return []
     
-    async def analyze_whale_activity(self, symbol: str):
-        """Analyze whale activity patterns"""
+    async def analyze_whale_activity(self, symbol: str) -> dict:
         transactions = await self.get_large_transactions(symbol)
         
         if not transactions:
             return {'activity': 'low', 'bias': 'neutral'}
         
         # Calculate buy/sell ratio
-        buys = sum(1 for tx in transactions if tx.get('to') == self.token_contracts[symbol].get('ethereum'))
-        sells = sum(1 for tx in transactions if tx.get('from') == self.token_contracts[symbol].get('ethereum'))
+        buys = sum(1 for tx in transactions if tx.get('to') in self.token_contracts.get(symbol, {}).values())
+        sells = sum(1 for tx in transactions if tx.get('from') in self.token_contracts.get(symbol, {}).values())
         
         total_volume = sum(tx['value'] for tx in transactions)
         
@@ -643,11 +781,11 @@ class EnhancedOnChainAnalyzer:
             bias = 'neutral'
         
         # Determine activity level
-        if total_volume > 10000000:  # $10M
+        if total_volume > 10000000:
             activity = 'very_high'
-        elif total_volume > 5000000:  # $5M
+        elif total_volume > 5000000:
             activity = 'high'
-        elif total_volume > 1000000:  # $1M
+        elif total_volume > 1000000:
             activity = 'medium'
         else:
             activity = 'low'
@@ -664,13 +802,17 @@ class EnhancedOnChainAnalyzer:
 class EnhancedSentimentAnalyzer:
     def __init__(self):
         self.vader = SentimentIntensityAnalyzer()
-        self.twitter_client = tweepy.Client(
-            bearer_token=S.TWITTER_BEARER_TOKEN,
-            wait_on_rate_limit=True
-        )
-        
-    async def analyze_news_sentiment(self, symbol: str):
-        """Analyze sentiment from news sources"""
+        try:
+            self.twitter_client = tweepy.Client(
+                bearer_token=S.TWITTER_BEARER_TOKEN,
+                wait_on_rate_limit=True
+            )
+            self.twitter_available = True
+        except Exception:
+            self.twitter_available = False
+            logger.warning("Twitter client not available")
+    
+    async def analyze_news_sentiment(self, symbol: str) -> dict:
         news_sources = [
             self._fetch_cryptopanic_news,
             self._fetch_newsapi_news
@@ -709,8 +851,10 @@ class EnhancedSentimentAnalyzer:
             'sources': len(all_news)
         }
     
-    async def _fetch_cryptopanic_news(self, symbol: str):
-        """Fetch news from CryptoPanic"""
+    async def _fetch_cryptopanic_news(self, symbol: str) -> list:
+        if not S.CRYPTOPANIC_API_KEY:
+            return []
+        
         url = "https://cryptopanic.com/api/v1/posts/"
         params = {
             'auth_token': S.CRYPTOPANIC_API_KEY,
@@ -718,13 +862,19 @@ class EnhancedSentimentAnalyzer:
             'kind': 'news'
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                data = await response.json()
-                return data.get('results', [])
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=30) as response:
+                    data = await response.json()
+                    return data.get('results', [])
+        except Exception as e:
+            logger.error(f"CryptoPanic error: {e}")
+            return []
     
-    async def _fetch_newsapi_news(self, symbol: str):
-        """Fetch news from NewsAPI"""
+    async def _fetch_newsapi_news(self, symbol: str) -> list:
+        if not S.NEWS_API_KEY:
+            return []
+        
         url = "https://newsapi.org/v2/everything"
         params = {
             'q': f'{symbol} cryptocurrency',
@@ -734,13 +884,19 @@ class EnhancedSentimentAnalyzer:
             'pageSize': 20
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                data = await response.json()
-                return data.get('articles', [])
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=30) as response:
+                    data = await response.json()
+                    return data.get('articles', [])
+        except Exception as e:
+            logger.error(f"NewsAPI error: {e}")
+            return []
     
-    async def analyze_twitter_sentiment(self, symbol: str):
-        """Analyze sentiment from Twitter"""
+    async def analyze_twitter_sentiment(self, symbol: str) -> dict:
+        if not self.twitter_available:
+            return {'sentiment': 'neutral', 'score': 0.0}
+        
         try:
             query = f"#{symbol} OR ${symbol} -is:retweet lang:en"
             tweets = self.twitter_client.search_recent_tweets(
@@ -775,8 +931,7 @@ class EnhancedSentimentAnalyzer:
             logger.error(f"Twitter sentiment error: {e}")
             return {'sentiment': 'neutral', 'score': 0.0}
     
-    async def combined_sentiment_analysis(self, symbol: str):
-        """Combine news and Twitter sentiment"""
+    async def combined_sentiment_analysis(self, symbol: str) -> dict:
         news_sentiment = await self.analyze_news_sentiment(symbol)
         twitter_sentiment = await self.analyze_twitter_sentiment(symbol)
         
@@ -803,20 +958,20 @@ class EnhancedSentimentAnalyzer:
             'twitter': twitter_sentiment
         }
 
-# Enhanced Prediction Module
+# Enhanced Prediction Engine
 class EnhancedPredictionEngine:
     def __init__(self):
         self.models = {}
         self.scalers = {}
         
-    async def prepare_features(self, df: pd.DataFrame, symbol: str):
-        """Prepare features for ML models"""
+    async def prepare_features(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         # Technical indicators
-        df['rsi'] = self._calculate_rsi(df['close'])
-        df['macd'] = self._calculate_macd(df['close'])
-        df['bollinger_upper'] = self._calculate_bollinger_bands(df['close'])[0]
-        df['bollinger_lower'] = self._calculate_bollinger_bands(df['close'])[1]
-        df['atr'] = self._calculate_atr(df)
+        ta_analyzer = AdvancedTechnicalAnalyzer()
+        df['rsi'] = ta_analyzer.calculate_rsi(df['close'])
+        df['macd'], df['macd_signal'], df['macd_hist'] = ta_analyzer.calculate_macd(df['close'])
+        df['bb_upper'], df['bb_mid'], df['bb_lower'] = ta_analyzer.calculate_bollinger_bands(df['close'])
+        df['atr'] = ta_analyzer.calculate_atr(df)
+        df['stoch_k'], df['stoch_d'] = ta_analyzer.calculate_stochastic(df)
         
         # Price features
         df['returns'] = df['close'].pct_change()
@@ -836,47 +991,17 @@ class EnhancedPredictionEngine:
         
         return df
     
-    def _calculate_rsi(self, prices, period=14):
-        delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-    
-    def _calculate_macd(self, prices, fast=12, slow=26, signal=9):
-        ema_fast = prices.ewm(span=fast).mean()
-        ema_slow = prices.ewm(span=slow).mean()
-        macd = ema_fast - ema_slow
-        signal_line = macd.ewm(span=signal).mean()
-        return macd - signal_line
-    
-    def _calculate_bollinger_bands(self, prices, period=20, std_dev=2):
-        sma = prices.rolling(window=period).mean()
-        std = prices.rolling(window=period).std()
-        upper_band = sma + (std * std_dev)
-        lower_band = sma - (std * std_dev)
-        return upper_band, lower_band
-    
-    def _calculate_atr(self, df, period=14):
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        return true_range.rolling(window=period).mean()
-    
-    async def train_model(self, df: pd.DataFrame, symbol: str, timeframe: str):
-        """Train ML model for prediction"""
+    async def train_model(self, df: pd.DataFrame, symbol: str, timeframe: str) -> dict:
         # Prepare features
         df = await self.prepare_features(df, symbol)
         
         # Define features and target
-        features = ['rsi', 'macd', 'bollinger_upper', 'bollinger_lower', 'atr', 
-                   'returns', 'log_returns', 'volatility', 'volume_ratio',
+        features = ['rsi', 'macd', 'macd_hist', 'bb_upper', 'bb_lower', 'atr', 
+                   'stoch_k', 'stoch_d', 'returns', 'log_returns', 'volatility', 'volume_ratio',
                    'hour', 'day_of_week']
         
         X = df[features]
-        y = (df['close'].shift(-1) > df['close']).astype(int)  # Next period direction
+        y = (df['close'].shift(-1) > df['close']).astype(int)
         
         # Split data
         split_idx = int(len(X) * 0.8)
@@ -913,8 +1038,7 @@ class EnhancedPredictionEngine:
             'feature_importance': dict(zip(features, model.feature_importances_))
         }
     
-    async def predict(self, df: pd.DataFrame, symbol: str, timeframe: str):
-        """Make prediction using trained model"""
+    async def predict(self, df: pd.DataFrame, symbol: str, timeframe: str) -> dict:
         model_key = f"{symbol}_{timeframe}"
         
         if model_key not in self.models:
@@ -924,8 +1048,8 @@ class EnhancedPredictionEngine:
         df = await self.prepare_features(df, symbol)
         
         # Get latest features
-        features = ['rsi', 'macd', 'bollinger_upper', 'bollinger_lower', 'atr', 
-                   'returns', 'log_returns', 'volatility', 'volume_ratio',
+        features = ['rsi', 'macd', 'macd_hist', 'bb_upper', 'bb_lower', 'atr', 
+                   'stoch_k', 'stoch_d', 'returns', 'log_returns', 'volatility', 'volume_ratio',
                    'hour', 'day_of_week']
         
         X = df[features].iloc[-1:].values
@@ -954,34 +1078,73 @@ class AdvancedCryptoBot:
         self.sentiment_analyzer = EnhancedSentimentAnalyzer()
         self.prediction_engine = EnhancedPredictionEngine()
         
-    async def analyze_symbol(self, symbol: str, user_id: int = None):
-        """Complete symbol analysis"""
+    async def fetch_market_data(self, symbol: str) -> dict:
+        cache_key = f"market_data_{symbol}"
+        cached_data = get_from_cache(cache_key)
+        if cached_data:
+            return cached_data
+        
+        try:
+            # Try to get data from primary exchange first
+            exchange = ccxt.binance()
+            ticker = await exchange.fetch_ticker(f"{symbol}/USDT")
+            ohlcv = await exchange.fetch_ohlcv(f"{symbol}/USDT", "1h", limit=1000)
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            
+            data = {
+                'symbol': symbol,
+                'price': ticker['last'],
+                'change_24h': ticker['percentage'],
+                'volume_24h': ticker['quoteVolume'],
+                'high_24h': ticker['high'],
+                'low_24h': ticker['low'],
+                'ohlcv': df
+            }
+            
+            # Cache result
+            cache_with_redis(cache_key, data, S.CACHE_TTL_SECONDS)
+            
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching market data for {symbol}: {e}")
+            return None
+    
+    async def analyze_symbol(self, symbol: str, user_id: int = None) -> dict:
         try:
             # Get user preferences
             session, user = get_user_session(user_id)
+            if not user:
+                return None
+            
             user_prefs = json.loads(user.preferences or '{}')
             
             # Fetch market data
-            market_data = await self._fetch_market_data(symbol)
+            market_data = await self.fetch_market_data(symbol)
+            if not market_data:
+                return None
             
             # Technical Analysis
-            ta_results = self.ta_analyzer.full_analysis(market_data['ohlcv']['1h'])
+            ta_results = self.ta_analyzer.full_analysis(market_data['ohlcv'])
             
             # On-chain Analysis
-            onchain_results = await self.onchain_analyzer.analyze_whale_activity(symbol)
+            onchain_results = await self.onchain_analyzer.analyze_whale_activity(symbol) if S.ENABLE_ONCHAIN else {}
             
             # Sentiment Analysis
-            sentiment_results = await self.sentiment_analyzer.combined_sentiment_analysis(symbol)
+            sentiment_results = await self.sentiment_analyzer.combined_sentiment_analysis(symbol) if S.ENABLE_SENTIMENT else {}
             
             # Prediction
             prediction = await self.prediction_engine.predict(
-                market_data['ohlcv']['1h'], symbol, '1h'
-            )
+                market_data['ohlcv'], symbol, '1h'
+            ) if S.ENABLE_PREDICTION else {}
             
             # Risk Management
-            current_price = market_data['market_data']['price']
+            current_price = market_data['price']
             risk_params = self._calculate_risk_parameters(
-                market_data['ohlcv']['1h'], current_price, user
+                market_data['ohlcv'], current_price, user
             )
             
             # Generate signal
@@ -998,7 +1161,7 @@ class AdvancedCryptoBot:
             
             return {
                 'symbol': symbol,
-                'market_data': market_data['market_data'],
+                'market_data': market_data,
                 'technical_analysis': ta_results,
                 'onchain_analysis': onchain_results,
                 'sentiment_analysis': sentiment_results,
@@ -1012,80 +1175,13 @@ class AdvancedCryptoBot:
             logger.error(f"Error analyzing {symbol}: {e}")
             return None
     
-    async def _fetch_market_data(self, symbol: str):
-        """Fetch market data from multiple sources"""
-        # Check cache first
-        cache_key = f"market_data_{symbol}"
-        cached_data = get_from_cache(cache_key)
-        if cached_data:
-            return cached_data
-        
-        # Fetch from exchanges
-        ohlcv = {}
-        for tf in S.TIMEFRAMES:
-            ohlcv[tf] = await self._fetch_ohlcv(symbol, tf)
-        
-        # Get market info
-        market_info = await self._fetch_market_info(symbol)
-        
-        data = {
-            'market_data': market_info,
-            'ohlcv': ohlcv
-        }
-        
-        # Cache result
-        cache_with_redis(cache_key, data, S.CACHE_TTL_SECONDS)
-        
-        return data
-    
-    async def _fetch_ohlcv(self, symbol: str, timeframe: str):
-        """Fetch OHLCV data"""
-        try:
-            exchange = ccxt.binance()
-            limit = 1000
-            
-            ohlcv = await exchange.fetch_ohlcv(
-                f"{symbol}/USDT", 
-                timeframe, 
-                limit=limit
-            )
-            
-            # Convert to DataFrame
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            return df
-        except Exception as e:
-            logger.error(f"Error fetching OHLCV for {symbol}: {e}")
-            return pd.DataFrame()
-    
-    async def _fetch_market_info(self, symbol: str):
-        """Fetch market information"""
-        try:
-            exchange = ccxt.binance()
-            ticker = await exchange.fetch_ticker(f"{symbol}/USDT")
-            
-            return {
-                'symbol': symbol,
-                'price': ticker['last'],
-                'change_24h': ticker['percentage'],
-                'volume_24h': ticker['quoteVolume'],
-                'high_24h': ticker['high'],
-                'low_24h': ticker['low']
-            }
-        except Exception as e:
-            logger.error(f"Error fetching market info for {symbol}: {e}")
-            return {}
-    
-    def _calculate_risk_parameters(self, df: pd.DataFrame, current_price: float, user: User):
-        """Calculate risk management parameters"""
+    def _calculate_risk_parameters(self, df: pd.DataFrame, current_price: float, user: User) -> dict:
         # Dynamic stop loss
         stop_loss = self.risk_manager.dynamic_stop_loss(df, current_price, 'long')
         
         # Position size
         position_size = self.risk_manager.calculate_position_size(
-            account_balance=10000,  # Should get from user
+            account_balance=user.balance,
             risk_percent=user.risk_level,
             entry_price=current_price,
             stop_loss=stop_loss,
@@ -1096,7 +1192,7 @@ class AdvancedCryptoBot:
         # Optimal leverage
         leverage = self.risk_manager.calculate_optimal_leverage(
             volatility=df['close'].pct_change().std(),
-            account_balance=10000,
+            account_balance=user.balance,
             position_size=position_size,
             max_leverage=user.max_leverage
         )
@@ -1117,32 +1213,31 @@ class AdvancedCryptoBot:
         }
     
     def _generate_signal(self, ta_results, onchain_results, sentiment_results, 
-                        prediction, risk_params):
-        """Generate trading signal"""
+                        prediction, risk_params) -> dict:
         signal_score = 0
         
         # Technical Analysis Weight (40%)
-        if ta_results['market_structure']['trend'] == 'uptrend':
+        if ta_results.get('market_structure', {}).get('trend') == 'uptrend':
             signal_score += 0.4
-        elif ta_results['market_structure']['trend'] == 'downtrend':
+        elif ta_results.get('market_structure', {}).get('trend') == 'downtrend':
             signal_score -= 0.4
         
         # On-chain Weight (30%)
-        if onchain_results['bias'] == 'bullish':
+        if onchain_results.get('bias') == 'bullish':
             signal_score += 0.3
-        elif onchain_results['bias'] == 'bearish':
+        elif onchain_results.get('bias') == 'bearish':
             signal_score -= 0.3
         
         # Sentiment Weight (20%)
-        if sentiment_results['sentiment'] == 'bullish':
+        if sentiment_results.get('sentiment') == 'bullish':
             signal_score += 0.2
-        elif sentiment_results['sentiment'] == 'bearish':
+        elif sentiment_results.get('sentiment') == 'bearish':
             signal_score -= 0.2
         
         # Prediction Weight (10%)
-        if prediction and prediction['direction'] == 'BUY':
+        if prediction and prediction.get('direction') == 'BUY':
             signal_score += 0.1
-        elif prediction and prediction['direction'] == 'SELL':
+        elif prediction and prediction.get('direction') == 'SELL':
             signal_score -= 0.1
         
         # Generate final signal
@@ -1161,40 +1256,49 @@ class AdvancedCryptoBot:
     
     def _save_analysis(self, user_id, symbol, signal, prediction, 
                      market_data, ta_results, onchain_results):
-        """Save analysis to database"""
-        session = Session()
-        
-        # Save signal
-        db_signal = Signal(
-            user_id=user_id,
-            symbol=symbol,
-            signal_type=signal['signal'],
-            confidence=signal['confidence'],
-            price=market_data['price'],
-            source='bot_analysis'
-        )
-        session.add(db_signal)
-        
-        # Update user performance
-        performance = session.query(Performance).filter_by(user_id=user_id).first()
-        if not performance:
-            performance = Performance(user_id=user_id)
-            session.add(performance)
-        
-        performance.total_signals += 1
-        performance.updated_at = datetime.datetime.utcnow()
-        
-        session.commit()
-        session.close()
+        try:
+            session = Session()
+            
+            # Save signal
+            db_signal = Signal(
+                user_id=user_id,
+                symbol=symbol,
+                signal_type=signal['signal'],
+                confidence=signal['confidence'],
+                price=market_data['price'],
+                source='bot_analysis'
+            )
+            session.add(db_signal)
+            
+            # Update user performance
+            performance = session.query(Performance).filter_by(user_id=user_id).first()
+            if not performance:
+                performance = Performance(user_id=user_id)
+                session.add(performance)
+            
+            performance.total_signals += 1
+            performance.updated_at = datetime.datetime.utcnow()
+            
+            session.commit()
+            session.close()
+        except Exception as e:
+            logger.error(f"Error saving analysis: {e}")
     
-    async def generate_chart(self, symbol: str, analysis_results):
-        """Generate interactive chart with analysis"""
+    async def generate_chart(self, symbol: str, analysis_results: dict) -> InputFile:
         try:
             # Get OHLCV data
-            df = await self._fetch_ohlcv(symbol, '1h')
+            df = analysis_results['market_data']['ohlcv']
             
-            # Create candlestick chart
-            fig = go.Figure(data=[
+            # Create subplots
+            fig = make_subplots(
+                rows=3, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.02,
+                row_heights=[0.6, 0.2, 0.2]
+            )
+            
+            # Candlestick chart
+            fig.add_trace(
                 go.Candlestick(
                     x=df.index,
                     open=df['open'],
@@ -1202,26 +1306,38 @@ class AdvancedCryptoBot:
                     low=df['low'],
                     close=df['close'],
                     name='Price'
-                )
-            ])
+                ),
+                row=1, col=1
+            )
             
             # Add technical indicators
-            if 'bollinger_upper' in analysis_results['technical_analysis']:
-                fig.add_trace(go.Scatter(
-                    x=df.index,
-                    y=analysis_results['technical_analysis']['bollinger_upper'],
-                    mode='lines',
-                    name='BB Upper',
-                    line=dict(color='red', width=1)
-                ))
+            if 'indicators' in analysis_results['technical_analysis']:
+                indicators = analysis_results['technical_analysis']['indicators']
                 
-                fig.add_trace(go.Scatter(
-                    x=df.index,
-                    y=analysis_results['technical_analysis']['bollinger_lower'],
-                    mode='lines',
-                    name='BB Lower',
-                    line=dict(color='green', width=1)
-                ))
+                # Bollinger Bands
+                fig.add_trace(
+                    go.Scatter(
+                        x=df.index,
+                        y=indicators['bb_upper'][0],
+                        mode='lines',
+                        name='BB Upper',
+                        line=dict(color='red', width=1),
+                        showlegend=False
+                    ),
+                    row=1, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(
+                        x=df.index,
+                        y=indicators['bb_lower'][0],
+                        mode='lines',
+                        name='BB Lower',
+                        line=dict(color='green', width=1),
+                        showlegend=False
+                    ),
+                    row=1, col=1
+                )
             
             # Add order blocks
             for block in analysis_results['technical_analysis']['order_blocks']['bullish']:
@@ -1233,21 +1349,58 @@ class AdvancedCryptoBot:
                     y1=block['high'],
                     fillcolor="green",
                     opacity=0.2,
-                    layer="below"
+                    layer="below",
+                    row=1, col=1
+                )
+            
+            # Volume chart
+            fig.add_trace(
+                go.Bar(
+                    x=df.index,
+                    y=df['volume'],
+                    name='Volume',
+                    marker_color='blue',
+                    opacity=0.5
+                ),
+                row=2, col=1
+            )
+            
+            # RSI chart
+            if 'indicators' in analysis_results['technical_analysis']:
+                rsi_data = []
+                for i in range(len(df)):
+                    if i >= 13:  # RSI period
+                        rsi = self.ta_analyzer.calculate_rsi(df['close'].iloc[:i+1]).iloc[-1]
+                        rsi_data.append(rsi)
+                    else:
+                        rsi_data.append(None)
+                
+                fig.add_trace(
+                    go.Scatter(
+                        x=df.index,
+                        y=rsi_data,
+                        mode='lines',
+                        name='RSI',
+                        line=dict(color='purple'),
+                        yaxis='y2'
+                    ),
+                    row=3, col=1
                 )
             
             # Update layout
             fig.update_layout(
                 title=f'{symbol} Technical Analysis',
-                yaxis_title='Price (USDT)',
+                yaxis=dict(title='Price (USDT)'),
+                yaxis2=dict(title='RSI', overlaying='y', side='right'),
                 template='plotly_dark',
-                height=600
+                height=800,
+                showlegend=True
             )
             
             # Convert to image
-            img_bytes = fig.to_image(format="png")
+            img_bytes = fig.to_image(format="png", width=1200, height=800)
             
-            return InputFile(io.BytesIO(img_bytes), filename=f'{symbol}_chart.png')
+            return InputFile(io.BytesIO(img_bytes), filename=f'{symbol}_analysis.png')
             
         except Exception as e:
             logger.error(f"Error generating chart: {e}")
@@ -1265,624 +1418,295 @@ class WebDashboard:
         self.app.router.add_get('/api/stats', self.get_stats)
         self.app.router.add_get('/api/signals', self.get_signals)
         self.app.router.add_get('/api/performance', self.get_performance)
+        self.app.router.add_get('/api/watchlist', self.get_watchlist)
         self.app.router.add_get('/chart/{symbol}', self.get_chart)
     
     async def index(self, request):
-        return web.FileResponse('dashboard/index.html')
-    
-    async def get_stats(self, request):
-        session = Session()
-        users = session.query(User).count()
-        signals = session.query(Signal).count()
-        session.close()
+        return web.Response(text="""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto AI Bot Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         
-        return web.json_response({
-            'total_users': users,
-            'total_signals': signals,
-            'uptime': time.time() - start_time
-        })
-    
-    async def get_signals(self, request):
-        session = Session()
-        signals = session.query(Signal).order_by(Signal.timestamp.desc()).limit(50).all()
-        session.close()
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0a0e27;
+            color: #ffffff;
+            line-height: 1.6;
+        }
         
-        return web.json_response([{
-            'symbol': s.symbol,
-            'signal': s.signal_type,
-            'confidence': s.confidence,
-            'price': s.price,
-            'timestamp': s.timestamp.isoformat()
-        } for s in signals])
-    
-    async def get_performance(self, request):
-        session = Session()
-        performance = session.query(Performance).all()
-        session.close()
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
         
-        return web.json_response([{
-            'user_id': p.user_id,
-            'total_signals': p.total_signals,
-            'successful_signals': p.successful_signals,
-            'avg_return': p.avg_return,
-            'sharpe_ratio': p.sharpe_ratio,
-            'max_drawdown': p.max_drawdown
-        } for p in performance])
-    
-    async def get_chart(self, request):
-        symbol = request.match_info['symbol']
-        analysis = await self.bot.analyze_symbol(symbol)
-        chart = await self.bot.generate_chart(symbol, analysis)
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding: 20px 0;
+            border-bottom: 2px solid #1a237e;
+        }
         
-        if chart:
-            return web.Response(
-                body=chart.read(),
-                content_type='image/png'
-            )
-        else:
-            return web.Response(status=404)
-
-# Telegram Bot Handlers
-class TelegramBotHandlers:
-    def __init__(self, bot):
-        self.bot = bot
-        self.dashboard = WebDashboard(bot)
-    
-    def setup_handlers(self, app):
-        # Command handlers
-        app.add_handler(CommandHandler("start", self.start))
-        app.add_handler(CommandHandler("help", self.help))
-        app.add_handler(CommandHandler("analyze", self.analyze))
-        app.add_handler(CommandHandler("settings", self.settings))
-        app.add_handler(CommandHandler("performance", self.performance))
-        app.add_handler(CommandHandler("watchlist", self.watchlist))
-        app.add_handler(CommandHandler("add", self.add_to_watchlist))
-        app.add_handler(CommandHandler("remove", self.remove_from_watchlist))
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
         
-        # Callback handlers
-        app.add_handler(CallbackQueryHandler(self.button_handler))
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
         
-        # Conversation handler for settings
-        conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('settings', self.settings)],
-            states={
-                'RISK_LEVEL': [CallbackQueryHandler(self.set_risk_level)],
-                'MAX_LEVERAGE': [CallbackQueryHandler(self.set_max_leverage)],
-            },
-            fallbacks=[CommandHandler('cancel', self.cancel_settings)],
-            per_message=False
-        )
-        app.add_handler(conv_handler)
-    
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
-        user = update.effective_user
-        session, db_user = get_user_session(user.id)
+        .stat-card {
+            background: linear-gradient(135deg, #1a237e, #0f3460);
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease;
+        }
         
-        welcome_text = f"""
-🤖 Welcome to Advanced Crypto AI Bot, {user.first_name}!
-
-I'm your intelligent cryptocurrency trading assistant with:
-🔍 Advanced Technical Analysis
-🐋 On-chain Whale Monitoring
-📊 Sentiment Analysis
-🧠 AI-Powered Predictions
-⚖️ Smart Risk Management
-
-Use /help to see all available commands.
-        """
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
         
-        keyboard = [
-            [InlineKeyboardButton("📊 Analyze Symbol", callback_data="analyze_menu"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="settings_menu")],
-            [InlineKeyboardButton("📈 Performance", callback_data="performance_menu"),
-             InlineKeyboardButton("📋 Watchlist", callback_data="watchlist_menu")]
-        ]
+        .stat-card h3 {
+            font-size: 0.9em;
+            color: #94a3b8;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
         
-        await update.message.reply_text(
-            welcome_text,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command"""
-        help_text = """
-📚 Available Commands:
-
-🔍 Analysis:
-• /analyze <symbol> - Complete analysis of a symbol
-• /watchlist - Show your watchlist
-• /add <symbol> - Add symbol to watchlist
-• /remove <symbol> - Remove from watchlist
-
-⚙️ Settings:
-• /settings - Configure your preferences
-• /performance - View your performance stats
-
-📊 Dashboard:
-• Web dashboard available for detailed analysis
-
-🤖 Features:
-• Advanced Technical Analysis
-• On-chain Whale Monitoring
-• Sentiment Analysis
-• AI Predictions
-• Risk Management
-• Real-time Alerts
-        """
+        .stat-card .value {
+            font-size: 2.2em;
+            font-weight: bold;
+            color: #ffffff;
+        }
         
-        await update.message.reply_text(help_text)
-    
-    async def analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /analyze command"""
-        if not context.args:
-            await update.message.reply_text("Please provide a symbol. Example: /analyze BTC")
-            return
+        .content-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 30px;
+            margin-bottom: 40px;
+        }
         
-        symbol = context.args[0].upper()
+        .panel {
+            background: #151b3d;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
         
-        # Send typing action
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action=ChatAction.TYPING
-        )
+        .panel h2 {
+            margin-bottom: 20px;
+            color: #667eea;
+            font-size: 1.5em;
+        }
         
-        # Perform analysis
-        analysis = await self.bot.analyze_symbol(symbol, update.effective_user.id)
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
         
-        if not analysis:
-            await update.message.reply_text("❌ Error analyzing symbol. Please try again.")
-            return
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #2a3f5f;
+        }
         
-        # Generate chart
-        chart = await self.bot.generate_chart(symbol, analysis)
+        th {
+            background: #1a237e;
+            color: #667eea;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.9em;
+            letter-spacing: 0.5px;
+        }
         
-        # Send results
-        await self.send_analysis_results(update, analysis, chart)
-    
-    async def send_analysis_results(self, update: Update, analysis, chart):
-        """Send analysis results to user"""
-        # Format message
-        message = self.format_analysis_message(analysis)
+        tr:hover {
+            background: #1a237e;
+        }
         
-        # Send chart if available
-        if chart:
-            await update.message.reply_photo(
-                photo=chart,
-                caption=message
-            )
-        else:
-            await update.message.reply_text(message)
-    
-    def format_analysis_message(self, analysis):
-        """Format analysis results into readable message"""
-        symbol = analysis['symbol']
-        signal = analysis['signal']
-        market_data = analysis['market_data']
-        risk = analysis['risk_management']
+        .signal-buy {
+            color: #4ade80;
+            font-weight: bold;
+        }
         
-        message = f"""
-📊 Analysis for {symbol}
-
-💰 Current Price: ${market_data['price']:.2f}
-📈 24h Change: {market_data['change_24h']:+.2f}%
-📊 24h Volume: ${market_data['volume_24h']:,.0f}
-
-🎯 Signal: {signal['signal']}
-📊 Confidence: {signal['confidence']:.2f}
-
-⚖️ Risk Management:
-• Stop Loss: ${risk['stop_loss']:.2f}
-• Take Profit 1: ${risk['take_profit_1']:.2f}
-• Take Profit 2: ${risk['take_profit_2']:.2f}
-• Position Size: {risk['position_size']:.4f}
-• Leverage: {risk['leverage']:.1f}x
-• Risk/Reward: {risk['risk_reward_ratio']:.2f}
-
-🔍 Technical Analysis:
-• Market Structure: {analysis['technical_analysis']['market_structure']['trend']}
-• Order Blocks: {len(analysis['technical_analysis']['order_blocks']['bullish'])} Bullish / {len(analysis['technical_analysis']['order_blocks']['bearish'])} Bearish
-• Liquidity Zones: {len(analysis['technical_analysis']['liquidity_zones']['high_zones'])} High / {len(analysis['technical_analysis']['liquidity_zones']['low_zones'])} Low
-
-🐋 On-chain Analysis:
-• Activity: {analysis['onchain_analysis']['activity']}
-• Bias: {analysis['onchain_analysis']['bias']}
-• Volume: ${analysis['onchain_analysis']['total_volume']:,.0f}
-
-💬 Sentiment Analysis:
-• Overall: {analysis['sentiment_analysis']['sentiment']}
-• Score: {analysis['sentiment_analysis']['score']:.2f}
-
-🧠 AI Prediction:
-• Direction: {analysis['prediction']['direction']}
-• Probability: {analysis['prediction']['probability']:.2f}
-
-⚠️ This is not financial advice. Trade at your own risk.
-        """
+        .signal-sell {
+            color: #f87171;
+            font-weight: bold;
+        }
         
-        return message
-    
-    async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /settings command"""
-        keyboard = [
-            [InlineKeyboardButton("Risk Level", callback_data="set_risk_level")],
-            [InlineKeyboardButton("Max Leverage", callback_data="set_max_leverage")],
-            [InlineKeyboardButton("Back", callback_data="main_menu")]
-        ]
+        .signal-hold {
+            color: #fbbf24;
+            font-weight: bold;
+        }
         
-        await update.message.reply_text(
-            "⚙️ Settings Menu:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        .refresh-btn {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            margin: 20px 0;
+        }
         
-        return 'RISK_LEVEL'
-    
-    async def set_risk_level(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Set user risk level"""
-        query = update.callback_query
-        await query.answer()
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
         
-        keyboard = [
-            [InlineKeyboardButton("Low (1%)", callback_data="risk_low")],
-            [InlineKeyboardButton("Medium (2%)", callback_data="risk_medium")],
-            [InlineKeyboardButton("High (3%)", callback_data="risk_high")],
-            [InlineKeyboardButton("Back", callback_data="settings_menu")]
-        ]
+        .chart-container {
+            margin-top: 20px;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
         
-        await query.edit_message_text(
-            "Select your risk level:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            padding: 20px;
+            border-top: 2px solid #1a237e;
+            color: #94a3b8;
+        }
         
-        return 'RISK_LEVEL'
-    
-    async def set_max_leverage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Set user max leverage"""
-        query = update.callback_query
-        await query.answer()
-        
-        keyboard = [
-            [InlineKeyboardButton("5x", callback_data="leverage_5")],
-            [InlineKeyboardButton("10x", callback_data="leverage_10")],
-            [InlineKeyboardButton("20x", callback_data="leverage_20")],
-            [InlineKeyboardButton("Back", callback_data="settings_menu")]
-        ]
-        
-        await query.edit_message_text(
-            "Select maximum leverage:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-        return 'MAX_LEVERAGE'
-    
-    async def cancel_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Cancel settings conversation"""
-        await update.message.reply_text("Settings cancelled.")
-        return ConversationHandler.END
-    
-    async def performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /performance command"""
-        session = Session()
-        user_id = update.effective_user.id
-        
-        performance = session.query(Performance).filter_by(user_id=user_id).first()
-        signals = session.query(Signal).filter_by(user_id=user_id).all()
-        
-        if not performance:
-            await update.message.reply_text("No performance data available yet.")
-            return
-        
-        # Calculate metrics
-        total_signals = performance.total_signals
-        success_rate = (performance.successful_signals / total_signals * 100) if total_signals > 0 else 0
-        
-        message = f"""
-📊 Your Performance:
-
-📈 Total Signals: {total_signals}
-✅ Successful Signals: {performance.successful_signals}
-📊 Success Rate: {success_rate:.1f}%
-💰 Average Return: {performance.avg_return:+.2f}%
-📊 Sharpe Ratio: {performance.sharpe_ratio:.2f}
-📉 Max Drawdown: {performance.max_drawdown:.2f}%
-
-Recent Signals:
-        """
-        
-        # Add recent signals
-        for signal in signals[-5:]:
-            message += f"\n• {signal.symbol}: {signal.signal_type} at ${signal.price:.2f}"
-        
-        await update.message.reply_text(message)
-        session.close()
-    
-    async def watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /watchlist command"""
-        session = Session()
-        user_id = update.effective_user.id
-        
-        watchlist = session.query(Watchlist).filter_by(user_id=user_id).all()
-        
-        if not watchlist:
-            await update.message.reply_text("Your watchlist is empty.")
-            return
-        
-        message = "📋 Your Watchlist:\n"
-        for item in watchlist:
-            message += f"• {item.symbol}\n"
-        
-        await update.message.reply_text(message)
-        session.close()
-    
-    async def add_to_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Add symbol to watchlist"""
-        if not context.args:
-            await update.message.reply_text("Please provide a symbol. Example: /add BTC")
-            return
-        
-        symbol = context.args[0].upper()
-        user_id = update.effective_user.id
-        
-        session = Session()
-        
-        # Check if already in watchlist
-        existing = session.query(Watchlist).filter_by(
-            user_id=user_id, symbol=symbol
-        ).first()
-        
-        if existing:
-            await update.message.reply_text(f"{symbol} is already in your watchlist.")
-            return
-        
-        # Add to watchlist
-        watchlist_item = Watchlist(user_id=user_id, symbol=symbol)
-        session.add(watchlist_item)
-        session.commit()
-        
-        await update.message.reply_text(f"✅ {symbol} added to your watchlist.")
-        session.close()
-    
-    async def remove_from_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Remove symbol from watchlist"""
-        if not context.args:
-            await update.message.reply_text("Please provide a symbol. Example: /remove BTC")
-            return
-        
-        symbol = context.args[0].upper()
-        user_id = update.effective_user.id
-        
-        session = Session()
-        
-        # Remove from watchlist
-        item = session.query(Watchlist).filter_by(
-            user_id=user_id, symbol=symbol
-        ).first()
-        
-        if not item:
-            await update.message.reply_text(f"{symbol} is not in your watchlist.")
-            return
-        
-        session.delete(item)
-        session.commit()
-        
-        await update.message.reply_text(f"✅ {symbol} removed from your watchlist.")
-        session.close()
-    
-    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard buttons"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        
-        if data == "analyze_menu":
-            keyboard = [
-                [InlineKeyboardButton("BTC", callback_data="analyze_BTC"),
-                 InlineKeyboardButton("ETH", callback_data="analyze_ETH")],
-                [InlineKeyboardButton("BNB", callback_data="analyze_BNB"),
-                 InlineKeyboardButton("ADA", callback_data="analyze_ADA")],
-                [InlineKeyboardButton("Custom", callback_data="analyze_custom"),
-                 InlineKeyboardButton("Back", callback_data="main_menu")]
-            ]
+        @media (max-width: 768px) {
+            .content-grid {
+                grid-template-columns: 1fr;
+            }
             
-            await query.edit_message_text(
-                "📊 Select symbol to analyze:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 Advanced Crypto AI Bot</h1>
+            <p>Real-time cryptocurrency analysis and trading signals</p>
+        </header>
         
-        elif data.startswith("analyze_"):
-            symbol = data.split("_")[1]
-            if symbol == "custom":
-                await query.edit_message_text("Please use /analyze <symbol> command.")
-            else:
-                # Send typing action
-                await context.bot.send_chat_action(
-                    chat_id=update.effective_chat.id,
-                    action=ChatAction.TYPING
-                )
-                
-                # Perform analysis
-                analysis = await self.bot.analyze_symbol(symbol, update.effective_user.id)
-                
-                if analysis:
-                    chart = await self.bot.generate_chart(symbol, analysis)
-                    await self.send_analysis_results(update, analysis, chart)
-                else:
-                    await query.edit_message_text("❌ Error analyzing symbol.")
+        <div class="stats-grid" id="stats">
+            <div class="stat-card">
+                <h3>Total Users</h3>
+                <div class="value" id="totalUsers">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Signals</h3>
+                <div class="value" id="totalSignals">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Success Rate</h3>
+                <div class="value" id="successRate">-</div>
+            </div>
+            <div class="stat-card">
+                <h3>Uptime</h3>
+                <div class="value" id="uptime">-</div>
+            </div>
+        </div>
         
-        elif data == "settings_menu":
-            await self.settings(update, context)
-        
-        elif data == "performance_menu":
-            await self.performance(update, context)
-        
-        elif data == "watchlist_menu":
-            await self.watchlist(update, context)
-        
-        elif data == "main_menu":
-            keyboard = [
-                [InlineKeyboardButton("📊 Analyze Symbol", callback_data="analyze_menu"),
-                 InlineKeyboardButton("⚙️ Settings", callback_data="settings_menu")],
-                [InlineKeyboardButton("📈 Performance", callback_data="performance_menu"),
-                 InlineKeyboardButton("📋 Watchlist", callback_data="watchlist_menu")]
-            ]
+        <div class="content-grid">
+            <div class="panel">
+                <h2>📊 Recent Signals</h2>
+                <table id="signalsTable">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Signal</th>
+                            <th>Confidence</th>
+                            <th>Price</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signalsBody">
+                        <!-- Signals will be populated here -->
+                    </tbody>
+                </table>
+                <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
+            </div>
             
-            await query.edit_message_text(
-                "🤖 Main Menu:",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            <div class="panel">
+                <h2>📈 Performance Metrics</h2>
+                <div id="performanceMetrics">
+                    <!-- Performance metrics will be populated here -->
+                </div>
+            </div>
+        </div>
         
-        elif data.startswith("risk_"):
-            risk_level = data.split("_")[1]
-            risk_percent = {"low": 1, "medium": 2, "high": 3}[risk_level]
-            
-            # Update user settings
-            session, user = get_user_session(update.effective_user.id)
-            user.risk_level = risk_level
-            session.commit()
-            
-            await query.edit_message_text(
-                f"✅ Risk level set to {risk_level} ({risk_percent}%)"
-            )
+        <div class="panel">
+            <h2>📋 Watchlist</h2>
+            <table id="watchlistTable">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Added</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="watchlistBody">
+                    <!-- Watchlist will be populated here -->
+                </tbody>
+            </table>
+        </div>
         
-        elif data.startswith("leverage_"):
-            leverage = int(data.split("_")[1])
-            
-            # Update user settings
-            session, user = get_user_session(update.effective_user.id)
-            user.max_leverage = leverage
-            session.commit()
-            
-            await query.edit_message_text(
-                f"✅ Max leverage set to {leverage}x"
-            )
-
-# Main Application
-class CryptoAIApp:
-    def __init__(self):
-        self.bot = AdvancedCryptoBot()
-        self.handlers = TelegramBotHandlers(self.bot)
-        self.web_dashboard = WebDashboard(self.bot)
-        
-    async def start_web_server(self):
-        """Start web dashboard"""
-        if S.ENABLE_WEB_DASHBOARD:
-            runner = web.AppRunner(self.web_dashboard.app)
-            await runner.setup()
-            site = web.TCPSite(runner, '0.0.0.0', S.WEB_PORT)
-            await site.start()
-            logger.info(f"Web dashboard started on port {S.WEB_PORT}")
+        <footer>
+            <p>&copy; 2024 Advanced Crypto AI Bot. All rights reserved.</p>
+        </footer>
+    </div>
     
-    async def periodic_tasks(self):
-        """Run periodic background tasks"""
-        while True:
-            try:
-                # Monitor watchlist symbols
-                await self.monitor_watchlist()
+    <script>
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
                 
-                # Update prediction models
-                await self.update_models()
+                document.getElementById('totalUsers').textContent = stats.total_users || 0;
+                document.getElementById('totalSignals').textContent = stats.total_signals || 0;
+                document.getElementById('successRate').textContent = 
+                    stats.success_rate ? (stats.success_rate * 100).toFixed(1) + '%' : '0%';
+                document.getElementById('uptime').textContent = 
+                    stats.uptime ? Math.floor(stats.uptime / 3600) + 'h' : '0h';
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+        
+        async function loadSignals() {
+            try {
+                const response = await fetch('/api/signals');
+                const signals = await response.json();
+                const tbody = document.getElementById('signalsBody');
                 
-                # Clean up old data
-                await self.cleanup_old_data()
-                
-                await asyncio.sleep(300)  # Run every 5 minutes
-            except Exception as e:
-                logger.error(f"Error in periodic tasks: {e}")
-                await asyncio.sleep(60)
-    
-    async def monitor_watchlist(self):
-        """Monitor symbols in user watchlists"""
-        session = Session()
-        watchlist_items = session.query(Watchlist).all()
-        
-        for item in watchlist_items:
-            try:
-                analysis = await self.bot.analyze_symbol(item.symbol, item.user_id)
-                
-                # Check if strong signal
-                if analysis and analysis['signal']['confidence'] > 0.8:
-                    # Send alert
-                    await self.send_signal_alert(item.user_id, item.symbol, analysis)
-            except Exception as e:
-                logger.error(f"Error monitoring {item.symbol}: {e}")
-        
-        session.close()
-    
-    async def send_signal_alert(self, user_id, symbol, analysis):
-        """Send signal alert to user"""
-        try:
-            message = f"""
-🚨 Strong Signal Alert for {symbol}!
-
-Signal: {analysis['signal']['signal']}
-Confidence: {analysis['signal']['confidence']:.2f}
-Price: ${analysis['market_data']['price']:.2f}
-
-Use /analyze {symbol} for full analysis.
-            """
-            
-            # Send via Telegram
-            app = context.application
-            await app.bot.send_message(
-                chat_id=user_id,
-                text=message
-            )
-        except Exception as e:
-            logger.error(f"Error sending alert: {e}")
-    
-    async def update_models(self):
-        """Update prediction models"""
-        # Get top symbols
-        symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'DOT', 'SOL', 'MATIC', 'AVAX']
-        
-        for symbol in symbols:
-            try:
-                # Fetch data
-                market_data = await self.bot._fetch_market_data(symbol)
-                df = market_data['ohlcv']['1h']
-                
-                # Train model
-                await self.bot.prediction_engine.train_model(df, symbol, '1h')
-                
-                logger.info(f"Updated model for {symbol}")
-            except Exception as e:
-                logger.error(f"Error updating model for {symbol}: {e}")
-    
-    async def cleanup_old_data(self):
-        """Clean up old data from database"""
-        session = Session()
-        
-        # Delete signals older than 30 days
-        cutoff_date = datetime.datetime.utcnow() - timedelta(days=30)
-        session.query(Signal).filter(Signal.timestamp < cutoff_date).delete()
-        
-        session.commit()
-        session.close()
-    
-    async def run(self):
-        """Run the application"""
-        # Start web server
-        await self.start_web_server()
-        
-        # Start periodic tasks
-        asyncio.create_task(self.periodic_tasks())
-        
-        # Setup Telegram bot
-        app = ApplicationBuilder().token(S.TELEGRAM_BOT_TOKEN).build()
-        self.handlers.setup_handlers(app)
-        
-        # Start bot
-        logger.info("Starting Telegram bot...")
-        await app.run_polling()
-
-# Global variables
-start_time = time.time()
-
-# Main entry point
-async def main():
-    app = CryptoAIApp()
-    await app.run()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+                tbody.innerHTML = signals.map(s => `
+                    <tr>
+                        <td>${s.symbol}</td>
+                        <td class="signal-${s.signal_type.toLowerCase()}">${s.signal_type}</td>
+                        <td>${(s.confidence * 100).toFixed(1)}%</td>
+                        <td>$${s.price.toFixed(2)}</td>
+                        <td>${new Date(s.timestamp).toLocaleString()}</td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading signals:',
