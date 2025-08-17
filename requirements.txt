@@ -14,7 +14,5 @@ tweepy
 beautifulsoup4
 requests
 joblib
-transformers
-torch
 prometheus_client
 pytest
