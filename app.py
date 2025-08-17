@@ -27,8 +27,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 from telegram.constants import ChatAction
 from sqlalchemy import create_engine, text, Column, Integer, String, Float, DateTime, Boolean, Text, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.exc import SQLAlchemyError
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
@@ -165,8 +164,11 @@ class ArbitrageOpportunity(Base):
 # Settings Class
 @dataclass
 class Settings:
+    # Bot Configuration
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID")
+    
+    # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///crypto_bot.db")
     
     # API Keys
@@ -190,10 +192,10 @@ class Settings:
     
     # Bot Settings
     OFFLINE_MODE: bool = os.getenv("OFFLINE_MODE", "false").lower() == "true"
-    EXCHANGES: List[str] = os.getenv("EXCHANGES", "binance,kucoin,bybit,bitfinex,gateio,bitget").split(",")
+    EXCHANGES: List[str] = field(default_factory=lambda: os.getenv("EXCHANGES", "binance,kucoin,bybit,bitfinex,gateio,bitget").split(","))
     MAX_COINS: int = int(os.getenv("MAX_COINS", "1000"))
     UNIVERSE_MAX_PAGES: int = int(os.getenv("UNIVERSE_MAX_PAGES", "20"))
-    TIMEFRAMES: List[str] = os.getenv("TIMEFRAMES", "1m,5m,15m,1h,4h,1d").split(",")
+    TIMEFRAMES: List[str] = field(default_factory=lambda: os.getenv("TIMEFRAMES", "1m,5m,15m,1h,4h,1d").split(","))
     
     # Performance Settings
     CONCURRENT_REQUESTS: int = int(os.getenv("CONCURRENT_REQUESTS", "15"))
@@ -221,7 +223,7 @@ class Settings:
     
     # On-chain Settings
     ONCHAIN_MIN_USD: float = float(os.getenv("ONCHAIN_MIN_USD", "500000"))
-    ONCHAIN_CHAINS: List[str] = os.getenv("ONCHAIN_CHAINS", "ethereum,polygon,binance-smart-chain,avalanche,arbitrum,fantom").split(",")
+    ONCHAIN_CHAINS: List[str] = field(default_factory=lambda: os.getenv("ONCHAIN_CHAINS", "ethereum,polygon,binance-smart-chain,avalanche,arbitrum,fantom").split(","))
     
     # Web Dashboard
     ENABLE_WEB_DASHBOARD: bool = os.getenv("ENABLE_WEB_DASHBOARD", "true").lower() == "true"
@@ -2000,7 +2002,7 @@ async def handle_api_dashboard(request):
         market_data = {}
         
         for symbol in symbols:
-            cache_key = f"market_data_{{symbol}}"
+            cache_key = f"market_data_{symbol}"
             cached_data = get_from_cache(cache_key)
             if cached_data:
                 market_data[symbol] = cached_data
