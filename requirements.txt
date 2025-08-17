@@ -16,6 +16,3 @@ requests
 joblib
 prometheus_client
 pytest
-psycopg2-binary
-transformers
-torch

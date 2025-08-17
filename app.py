@@ -47,6 +47,7 @@ from prometheus_client import Counter, Histogram
 # Global variables for heavy dependencies
 transformers_available = False
 torch_available = False
+psycopg2_available = False
 
 # Initialize Prometheus metrics
 REQUEST_COUNT = Counter('requests_total', 'Total requests')
@@ -68,98 +69,134 @@ except Exception as e:
     redis_available = False
     redis_client = None
 
-# Database Setup
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = 'users'
-    id = Column(Integer, primary_key=True)
-    chat_id = Column(Integer, unique=True)
-    username = Column(String(50))
-    preferences = Column(Text)
-    risk_level = Column(String(20), default='medium')
-    max_leverage = Column(Float, default=5.0)
-    balance = Column(Float, default=10000.0)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    language = Column(String(10), default='en')
+# Database Setup with fallback
+try:
+    # Try to use PostgreSQL if available
+    if os.getenv("DATABASE_URL", "").startswith("postgresql"):
+        try:
+            import psycopg2
+            psycopg2_available = True
+            logger.info("psycopg2 imported successfully")
+        except ImportError:
+            logger.warning("psycopg2 not available, falling back to SQLite")
+            psycopg2_available = False
+            # Fallback to SQLite
+            os.environ["DATABASE_URL"] = "sqlite:///crypto_bot.db"
     
-    signals = relationship("Signal", back_populates="user")
-    watchlist = relationship("Watchlist", back_populates="user")
-    performance = relationship("Performance", back_populates="user")
-
-class Signal(Base):
-    __tablename__ = 'signals'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(20))
-    signal_type = Column(String(10))
-    confidence = Column(Float)
-    price = Column(Float)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    source = Column(String(50))
-    user_id = Column(Integer, ForeignKey('users.id'))
-    evaluated = Column(Boolean, default=False)
-    result = Column(Float)
-    timeframe = Column(String(10), default='1h')
+    # Create database engine
+    engine = create_engine(
+        os.getenv("DATABASE_URL", "sqlite:///crypto_bot.db"), 
+        pool_pre_ping=True, 
+        pool_size=20, 
+        max_overflow=30
+    )
+    Session = sessionmaker(bind=engine)
     
-    user = relationship("User", back_populates="signals")
-
-class Watchlist(Base):
-    __tablename__ = 'watchlist'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    symbol = Column(String(20))
-    added_at = Column(DateTime, default=datetime.datetime.utcnow)
+    # Create tables
+    Base = declarative_base()
     
-    user = relationship("User", back_populates="watchlist")
+    # Define models
+    class User(Base):
+        __tablename__ = 'users'
+        id = Column(Integer, primary_key=True)
+        chat_id = Column(Integer, unique=True)
+        username = Column(String(50))
+        preferences = Column(Text)
+        risk_level = Column(String(20), default='medium')
+        max_leverage = Column(Float, default=5.0)
+        balance = Column(Float, default=10000.0)
+        created_at = Column(DateTime, default=datetime.datetime.utcnow)
+        language = Column(String(10), default='en')
+        
+        signals = relationship("Signal", back_populates="user")
+        watchlist = relationship("Watchlist", back_populates="user")
+        performance = relationship("Performance", back_populates="user")
 
-class Performance(Base):
-    __tablename__ = 'performance'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    total_signals = Column(Integer, default=0)
-    successful_signals = Column(Integer, default=0)
-    avg_return = Column(Float, default=0.0)
-    sharpe_ratio = Column(Float, default=0.0)
-    max_drawdown = Column(Float, default=0.0)
-    win_rate = Column(Float, default=0.0)
-    profit_factor = Column(Float, default=0.0)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+    class Signal(Base):
+        __tablename__ = 'signals'
+        id = Column(Integer, primary_key=True)
+        symbol = Column(String(20))
+        signal_type = Column(String(10))
+        confidence = Column(Float)
+        price = Column(Float)
+        timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+        source = Column(String(50))
+        user_id = Column(Integer, ForeignKey('users.id'))
+        evaluated = Column(Boolean, default=False)
+        result = Column(Float)
+        timeframe = Column(String(10), default='1h')
+        
+        user = relationship("User", back_populates="signals")
+
+    class Watchlist(Base):
+        __tablename__ = 'watchlist'
+        id = Column(Integer, primary_key=True)
+        user_id = Column(Integer, ForeignKey('users.id'))
+        symbol = Column(String(20))
+        added_at = Column(DateTime, default=datetime.datetime.utcnow)
+        
+        user = relationship("User", back_populates="watchlist")
+
+    class Performance(Base):
+        __tablename__ = 'performance'
+        id = Column(Integer, primary_key=True)
+        user_id = Column(Integer, ForeignKey('users.id'))
+        total_signals = Column(Integer, default=0)
+        successful_signals = Column(Integer, default=0)
+        avg_return = Column(Float, default=0.0)
+        sharpe_ratio = Column(Float, default=0.0)
+        max_drawdown = Column(Float, default=0.0)
+        win_rate = Column(Float, default=0.0)
+        profit_factor = Column(Float, default=0.0)
+        updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+        
+        user = relationship("User", back_populates="performance")
+
+    class MarketData(Base):
+        __tablename__ = 'market_data'
+        id = Column(Integer, primary_key=True)
+        symbol = Column(String(20), unique=True)
+        price = Column(Float)
+        change_24h = Column(Float)
+        volume_24h = Column(Float)
+        market_cap = Column(Float)
+        last_update = Column(DateTime, default=datetime.datetime.utcnow)
+
+    class OnChainTransaction(Base):
+        __tablename__ = 'onchain_transactions'
+        id = Column(Integer, primary_key=True)
+        symbol = Column(String(20))
+        chain = Column(String(20))
+        hash = Column(String(66))
+        from_address = Column(String(42))
+        to_address = Column(String(42))
+        value_usd = Column(Float)
+        timestamp = Column(DateTime)
+        direction = Column(String(10))
+
+    class ArbitrageOpportunity(Base):
+        __tablename__ = 'arbitrage_opportunities'
+        id = Column(Integer, primary_key=True)
+        symbol = Column(String(20))
+        buy_exchange = Column(String(50))
+        sell_exchange = Column(String(50))
+        buy_price = Column(Float)
+        sell_price = Column(Float)
+        profit_percentage = Column(Float)
+        timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+        executed = Column(Boolean, default=False)
     
-    user = relationship("User", back_populates="performance")
-
-class MarketData(Base):
-    __tablename__ = 'market_data'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(20), unique=True)
-    price = Column(Float)
-    change_24h = Column(Float)
-    volume_24h = Column(Float)
-    market_cap = Column(Float)
-    last_update = Column(DateTime, default=datetime.datetime.utcnow)
-
-class OnChainTransaction(Base):
-    __tablename__ = 'onchain_transactions'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(20))
-    chain = Column(String(20))
-    hash = Column(String(66))
-    from_address = Column(String(42))
-    to_address = Column(String(42))
-    value_usd = Column(Float)
-    timestamp = Column(DateTime)
-    direction = Column(String(10))
-
-class ArbitrageOpportunity(Base):
-    __tablename__ = 'arbitrage_opportunities'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(20))
-    buy_exchange = Column(String(50))
-    sell_exchange = Column(String(50))
-    buy_price = Column(Float)
-    sell_price = Column(Float)
-    profit_percentage = Column(Float)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    executed = Column(Boolean, default=False)
+    # Create tables
+    Base.metadata.create_all(engine)
+    logger.info("Database connected successfully")
+    
+except Exception as e:
+    logger.error(f"Database connection failed: {e}")
+    # Create a minimal fallback for the app to run
+    Base = declarative_base()
+    engine = None
+    Session = None
+    sys.exit(1)
 
 # Settings Class
 @dataclass
@@ -247,19 +284,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database Setup
-try:
-    engine = create_engine(S.DATABASE_URL, pool_pre_ping=True, pool_size=20, max_overflow=30)
-    Session = sessionmaker(bind=engine)
-    Base.metadata.create_all(engine)
-    logger.info("Database connected successfully")
-except Exception as e:
-    logger.error(f"Database connection failed: {e}")
-    sys.exit(1)
-
 # Dynamic dependency loader
 async def install_heavy_dependencies():
-    global transformers_available, torch_available
+    global transformers_available, torch_available, psycopg2_available
     
     if not S.ENABLE_TRANSFORMERS:
         return
@@ -292,6 +319,9 @@ async def install_heavy_dependencies():
 
 # Helper Functions
 def get_user_session(chat_id: int):
+    if not Session:
+        return None, None
+        
     session = Session()
     try:
         user = session.query(User).filter_by(chat_id=chat_id).first()
@@ -1442,7 +1472,7 @@ class BackupSystem:
             if S.DATABASE_URL.startswith('sqlite'):
                 import shutil
                 shutil.copy2(S.DATABASE_URL.replace('sqlite:///', ''), backup_file)
-            elif S.DATABASE_URL.startswith('postgresql'):
+            elif S.DATABASE_URL.startswith('postgresql') and psycopg2_available:
                 os.system(f"pg_dump {S.DATABASE_URL} > {backup_file}")
             
             if S.CLOUD_STORAGE_BUCKET:
@@ -1551,7 +1581,7 @@ class AdvancedCryptoBot:
     async def analyze_symbol(self, symbol: str, user_id: int = None) -> dict:
         try:
             session, user = get_user_session(user_id)
-            if not user:
+            if not user or not session:
                 return None
             
             user_prefs = json.loads(user.preferences or '{}')
@@ -1710,7 +1740,10 @@ class AdvancedCryptoBot:
     
     def _save_analysis(self, user_id, symbol, signal, prediction, market_data, ta_results, onchain_results):
         try:
-            session = Session()
+            session, _ = get_user_session(user_id)
+            if not session:
+                return
+                
             new_signal = Signal(
                 user_id=user_id,
                 symbol=symbol,
@@ -1995,7 +2028,10 @@ async def handle_dashboard(request):
 async def handle_api_dashboard(request):
     """API endpoint for dashboard data"""
     try:
-        session = Session()
+        session, _ = get_user_session(1)  # Use a default user ID
+        if not session:
+            return web.json_response({'error': 'Database not available'}, status=500)
+            
         signals = session.query(Signal).order_by(Signal.timestamp.desc()).limit(10).all()
         
         symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'DOT']
@@ -2037,6 +2073,7 @@ async def handle_health(request):
             "status": "healthy", 
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "transformers_available": transformers_available,
+            "psycopg2_available": psycopg2_available,
             "version": "2.0.0"
         })
     except Exception as e:
@@ -2047,10 +2084,13 @@ async def websocket_handler(request):
     await ws.prepare(request)
     
     try:
-        bot = AdvancedCryptoBot()
-        
         while True:
-            session = Session()
+            session, _ = get_user_session(1)  # Use a default user ID
+            if not session:
+                await ws.send_json({"error": "Database not available"})
+                await asyncio.sleep(5)
+                continue
+                
             signals = session.query(Signal).order_by(Signal.timestamp.desc()).limit(5).all()
             
             data = {
