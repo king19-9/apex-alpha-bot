@@ -11,9 +11,34 @@ import logging
 import json
 import datetime
 import subprocess
-import importlib
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+# Initialize logger first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('crypto_bot.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Try to import psycopg2 if DATABASE_URL is PostgreSQL
+psycopg2_available = False
+if os.getenv("DATABASE_URL", "").startswith("postgresql"):
+    try:
+        import psycopg2
+        psycopg2_available = True
+        logger.info("psycopg2 imported successfully")
+    except ImportError:
+        logger.warning("psycopg2 not available, falling back to SQLite")
+        psycopg2_available = False
+        # Fallback to SQLite
+        os.environ["DATABASE_URL"] = "sqlite:///crypto_bot.db"
+else:
+    logger.info("Using SQLite database")
 
 # Third-party imports (lightweight)
 import aiohttp
@@ -47,7 +72,6 @@ from prometheus_client import Counter, Histogram
 # Global variables for heavy dependencies
 transformers_available = False
 torch_available = False
-psycopg2_available = False
 
 # Initialize Prometheus metrics
 REQUEST_COUNT = Counter('requests_total', 'Total requests')
@@ -64,25 +88,14 @@ try:
         socket_timeout=5
     )
     redis_available = True
+    logger.info("Redis connected successfully")
 except Exception as e:
-    logging.warning(f"Redis not available: {e}")
+    logger.warning(f"Redis not available: {e}")
     redis_available = False
     redis_client = None
 
-# Database Setup with fallback
+# Database Setup
 try:
-    # Try to use PostgreSQL if available
-    if os.getenv("DATABASE_URL", "").startswith("postgresql"):
-        try:
-            import psycopg2
-            psycopg2_available = True
-            logger.info("psycopg2 imported successfully")
-        except ImportError:
-            logger.warning("psycopg2 not available, falling back to SQLite")
-            psycopg2_available = False
-            # Fallback to SQLite
-            os.environ["DATABASE_URL"] = "sqlite:///crypto_bot.db"
-    
     # Create database engine
     engine = create_engine(
         os.getenv("DATABASE_URL", "sqlite:///crypto_bot.db"), 
@@ -273,20 +286,9 @@ class Settings:
 
 S = Settings()
 
-# Logger Setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('crypto_bot.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
-
 # Dynamic dependency loader
 async def install_heavy_dependencies():
-    global transformers_available, torch_available, psycopg2_available
+    global transformers_available, torch_available
     
     if not S.ENABLE_TRANSFORMERS:
         return
