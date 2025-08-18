@@ -42,7 +42,6 @@ else:
 
 # Third-party imports (lightweight)
 import aiohttp
-from aiohttp import web
 import pandas as pd
 import numpy as np
 import ccxt.async_support as ccxt
@@ -276,7 +275,7 @@ class Settings:
     ONCHAIN_CHAINS: List[str] = field(default_factory=lambda: os.getenv("ONCHAIN_CHAINS", "ethereum,polygon,binance-smart-chain,avalanche,arbitrum,fantom").split(","))
     
     # Web Dashboard
-    ENABLE_WEB_DASHBOARD: bool = os.getenv("ENABLE_WEB_DASHBOARD", "true").lower() == "true"
+    ENABLE_WEB_DASHBOARD: bool = os.getenv("ENABLE_WEB_DASHBOARD", "false").lower() == "true"
     WEB_PORT: int = int(os.getenv("WEB_PORT", "8080"))
     
     # Backup Settings
@@ -1222,25 +1221,16 @@ class EnhancedPredictionEngine:
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
-        model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=10,
-            random_state=42,
-            n_jobs=-1
-        )
-        
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
         model.fit(X_train_scaled, y_train)
         
-        train_score = model.score(X_train_scaled, y_train)
-        test_score = model.score(X_test_scaled, y_test)
+        self.models[f"{symbol}_{timeframe}"] = model
+        self.scalers[f"{symbol}_{timeframe}"] = scaler
         
-        model_key = f"{symbol}_{timeframe}"
-        self.models[model_key] = model
-        self.scalers[model_key] = scaler
+        accuracy = model.score(X_test_scaled, y_test)
         
         return {
-            'train_accuracy': train_score,
-            'test_accuracy': test_score,
+            'accuracy': accuracy,
             'feature_importance': dict(zip(features, model.feature_importances_))
         }
     
@@ -1248,7 +1238,7 @@ class EnhancedPredictionEngine:
         model_key = f"{symbol}_{timeframe}"
         
         if model_key not in self.models:
-            return None
+            return {'prediction': 'hold', 'confidence': 0.0}
         
         df = await self.prepare_features(df, symbol)
         
@@ -1263,897 +1253,195 @@ class EnhancedPredictionEngine:
         
         model = self.models[model_key]
         prediction = model.predict(X_scaled)[0]
-        probability = model.predict_proba(X_scaled)[0][1]
+        probabilities = model.predict_proba(X_scaled)[0]
         
-        return {
-            'direction': 'BUY' if prediction == 1 else 'SELL',
-            'probability': probability,
-            'confidence': max(probability, 1 - probability)
-        }
-
-# Exchange Connector
-class ExchangeConnector:
-    def __init__(self, exchange_name: str):
-        self.exchange_name = exchange_name
-        self.exchange = getattr(ccxt, exchange_name)({
-            'apiKey': os.getenv(f'{exchange_name.upper()}_API_KEY'),
-            'secret': os.getenv(f'{exchange_name.upper()}_API_SECRET'),
-            'enableRateLimit': True
-        })
-    
-    async def get_ticker(self, symbol: str) -> dict:
-        try:
-            return await self.exchange.fetch_ticker(f"{symbol}/USDT")
-        except Exception as e:
-            logger.error(f"Error fetching ticker from {self.exchange_name}: {e}")
-            return None
-    
-    async def get_orderbook(self, symbol: str) -> dict:
-        try:
-            return await self.exchange.fetch_order_book(f"{symbol}/USDT")
-        except Exception as e:
-            logger.error(f"Error fetching orderbook from {self.exchange_name}: {e}")
-            return None
-    
-    async def place_order(self, symbol: str, order_type: str, side: str, amount: float, price: float = None):
-        try:
-            if order_type == 'market':
-                order = await self.exchange.create_market_order(
-                    symbol=f"{symbol}/USDT",
-                    side=side,
-                    amount=amount
-                )
-            else:
-                order = await self.exchange.create_limit_order(
-                    symbol=f"{symbol}/USDT",
-                    side=side,
-                    amount=amount,
-                    price=price
-                )
-            return order
-        except Exception as e:
-            logger.error(f"Order failed on {self.exchange_name}: {e}")
-            return None
-
-# Arbitrage Strategy
-class ArbitrageStrategy:
-    def __init__(self):
-        self.exchanges = [
-            ExchangeConnector('binance'),
-            ExchangeConnector('kucoin'),
-            ExchangeConnector('bybit')
-        ]
-    
-    async def get_prices_from_exchanges(self, symbols: List[str]) -> dict:
-        prices = {}
+        confidence = max(probabilities)
         
-        tasks = []
-        for exchange in self.exchanges:
-            for symbol in symbols:
-                tasks.append(self._get_price(exchange, symbol))
-        
-        results = await asyncio.gather(*tasks)
-        
-        for result in results:
-            if result:
-                exchange_name, symbol, price = result
-                if symbol not in prices:
-                    prices[symbol] = {}
-                prices[symbol][exchange_name] = price
-        
-        return prices
-    
-    async def _get_price(self, exchange: ExchangeConnector, symbol: str) -> tuple:
-        ticker = await exchange.get_ticker(symbol)
-        if ticker:
-            return (exchange.exchange_name, symbol, ticker['last'])
-        return None
-    
-    async def find_arbitrage_opportunities(self) -> List[dict]:
-        symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'DOT']
-        prices = await self.get_prices_from_exchanges(symbols)
-        
-        opportunities = []
-        for symbol in prices:
-            if len(prices[symbol]) < 2:
-                continue
-                
-            min_price = min(prices[symbol].values())
-            max_price = max(prices[symbol].values())
-            
-            if (max_price - min_price) / min_price > 0.002:  # 0.2% arbitrage
-                buy_exchange = min(prices[symbol], key=prices[symbol].get)
-                sell_exchange = max(prices[symbol], key=prices[symbol].get)
-                
-                opportunities.append({
-                    'symbol': symbol,
-                    'buy_exchange': buy_exchange,
-                    'sell_exchange': sell_exchange,
-                    'buy_price': min_price,
-                    'sell_price': max_price,
-                    'profit_percentage': (max_price - min_price) / min_price * 100
-                })
-        
-        return opportunities
-    
-    async def execute_arbitrage(self, opportunity: dict, amount: float) -> bool:
-        try:
-            buy_exchange = next(ex for ex in self.exchanges if ex.exchange_name == opportunity['buy_exchange'])
-            buy_order = await buy_exchange.place_order(
-                symbol=opportunity['symbol'],
-                order_type='market',
-                side='buy',
-                amount=amount
-            )
-            
-            if not buy_order:
-                return False
-            
-            sell_exchange = next(ex for ex in self.exchanges if ex.exchange_name == opportunity['sell_exchange'])
-            sell_order = await sell_exchange.place_order(
-                symbol=opportunity['symbol'],
-                order_type='market',
-                side='sell',
-                amount=amount
-            )
-            
-            return sell_order is not None
-        except Exception as e:
-            logger.error(f"Arbitrage execution failed: {e}")
-            return False
-
-# Alert System
-class AlertSystem:
-    def __init__(self):
-        self.alert_history = []
-    
-    async def check_alerts(self, analysis: dict, user: User) -> List[dict]:
-        alerts = []
-        
-        if analysis['signal']['confidence'] > 0.8:
-            alert = {
-                'type': 'high_confidence',
-                'message': localization.get_text('high_confidence', user.language),
-                'data': analysis['signal']
-            }
-            alerts.append(alert)
-        
-        if analysis.get('onchain_analysis', {}).get('activity') == 'very_high':
-            alert = {
-                'type': 'whale_activity',
-                'message': localization.get_text('whale_activity', user.language),
-                'data': analysis['onchain_analysis']
-            }
-            alerts.append(alert)
-        
-        volatility = analysis.get('market_data', {}).get('ohlcv', pd.DataFrame()).get('close', pd.Series()).pct_change().std()
-        if volatility and volatility > 0.05:
-            alert = {
-                'type': 'market_volatility',
-                'message': localization.get_text('market_volatility', user.language),
-                'data': {'volatility': volatility}
-            }
-            alerts.append(alert)
-        
-        if analysis.get('arbitrage_opportunity'):
-            alert = {
-                'type': 'arbitrage_opportunity',
-                'message': localization.get_text('arbitrage_opportunity', user.language),
-                'data': analysis['arbitrage_opportunity']
-            }
-            alerts.append(alert)
-        
-        for alert in alerts:
-            self.alert_history.append({
-                'user_id': user.id,
-                'timestamp': datetime.datetime.utcnow(),
-                'alert': alert
-            })
-        
-        return alerts
-    
-    async def send_telegram_alert(self, alert: dict, user: User):
-        try:
-            message = f"🚨 {alert['message']}\n\n"
-            message += f"Data: {json.dumps(alert['data'], indent=2)}"
-            
-            logger.info(f"Alert sent to user {user.id}: {alert['type']}")
-        except Exception as e:
-            logger.error(f"Error sending alert: {e}")
-
-# Backup System
-class BackupSystem:
-    def __init__(self):
-        self.last_backup = datetime.datetime.utcnow()
-    
-    async def backup_database(self):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = f"backup_{timestamp}.sql"
-        
-        try:
-            if S.DATABASE_URL.startswith('sqlite'):
-                import shutil
-                shutil.copy2(S.DATABASE_URL.replace('sqlite:///', ''), backup_file)
-            elif S.DATABASE_URL.startswith('postgresql') and psycopg2_available:
-                os.system(f"pg_dump {S.DATABASE_URL} > {backup_file}")
-            
-            if S.CLOUD_STORAGE_BUCKET:
-                await self.upload_to_cloud(backup_file)
-            
-            self.last_backup = datetime.datetime.utcnow()
-            logger.info(f"Database backup completed: {backup_file}")
-        except Exception as e:
-            logger.error(f"Backup failed: {e}")
-    
-    async def upload_to_cloud(self, file_path: str):
-        logger.info(f"Uploading {file_path} to cloud storage")
-    
-    async def should_backup(self) -> bool:
-        if not S.ENABLE_BACKUP:
-            return False
-        
-        hours_since_backup = (datetime.datetime.utcnow() - self.last_backup).total_seconds() / 3600
-        return hours_since_backup >= S.BACKUP_INTERVAL_HOURS
-
-# Multi-Timeframe Strategy
-class MultiTimeframeStrategy:
-    async def analyze_multiple_timeframes(self, symbol: str) -> dict:
-        timeframes = ['1h', '4h', '1d']
-        signals = {}
-        
-        for tf in timeframes:
-            exchange = ccxt.binance()
-            ohlcv = await exchange.fetch_ohlcv(f"{symbol}/USDT", tf, limit=500)
-            
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            ta_analyzer = AdvancedTechnicalAnalyzer()
-            ta_results = ta_analyzer.full_analysis(df)
-            
-            if ta_results['market_structure']['trend'] == 'uptrend':
-                signals[tf] = 'BUY'
-            elif ta_results['market_structure']['trend'] == 'downtrend':
-                signals[tf] = 'SELL'
-            else:
-                signals[tf] = 'HOLD'
-        
-        buy_count = sum(1 for s in signals.values() if s == 'BUY')
-        sell_count = sum(1 for s in signals.values() if s == 'SELL')
-        
-        if buy_count > sell_count:
-            combined_signal = 'BUY'
-        elif sell_count > buy_count:
-            combined_signal = 'SELL'
+        if prediction == 1:
+            signal = 'buy'
+        elif prediction == 0:
+            signal = 'sell'
         else:
-            combined_signal = 'HOLD'
+            signal = 'hold'
         
         return {
-            'signals': signals,
-            'combined_signal': combined_signal,
-            'confidence': max(buy_count, sell_count) / len(timeframes)
-        }
-
-# Main Bot Class
-class AdvancedCryptoBot:
-    def __init__(self):
-        self.ta_analyzer = AdvancedTechnicalAnalyzer()
-        self.risk_manager = AdvancedRiskManager()
-        self.onchain_analyzer = EnhancedOnChainAnalyzer()
-        self.sentiment_analyzer = EnhancedSentimentAnalyzer()
-        self.prediction_engine = EnhancedPredictionEngine()
-        self.arbitrage_strategy = ArbitrageStrategy()
-        self.alert_system = AlertSystem()
-        self.backup_system = BackupSystem()
-        self.multitimeframe_strategy = MultiTimeframeStrategy()
-        
-    async def fetch_market_data(self, symbol: str) -> dict:
-        cache_key = f"market_data_{symbol}"
-        cached_data = get_from_cache(cache_key)
-        if cached_data:
-            return cached_data
-        
-        try:
-            exchange = ccxt.binance()
-            ticker = await exchange.fetch_ticker(f"{symbol}/USDT")
-            ohlcv = await exchange.fetch_ohlcv(f"{symbol}/USDT", "1h", limit=1000)
-            
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-            
-            data = {
-                'symbol': symbol,
-                'price': ticker['last'],
-                'change_24h': ticker['percentage'],
-                'volume_24h': ticker['quoteVolume'],
-                'high_24h': ticker['high'],
-                'low_24h': ticker['low'],
-                'ohlcv': df
+            'prediction': signal,
+            'confidence': confidence,
+            'probabilities': {
+                'buy': probabilities[1],
+                'sell': probabilities[0]
             }
-            
-            cache_with_redis(cache_key, data, S.CACHE_TTL_SECONDS)
-            
-            return data
-        except Exception as e:
-            logger.error(f"Error fetching market data for {symbol}: {e}")
-            return None
-    
-    async def analyze_symbol(self, symbol: str, user_id: int = None) -> dict:
-        try:
-            session, user = get_user_session(user_id)
-            if not user or not session:
-                return None
-            
-            user_prefs = json.loads(user.preferences or '{}')
-            
-            market_data = await self.fetch_market_data(symbol)
-            if not market_data:
-                return None
-            
-            ta_results = self.ta_analyzer.full_analysis(market_data['ohlcv'])
-            
-            onchain_results = await self.onchain_analyzer.analyze_whale_activity(symbol) if S.ENABLE_ONCHAIN else {}
-            
-            defi_metrics = await self.onchain_analyzer.analyze_defi_metrics(symbol) if S.ENABLE_ONCHAIN else {}
-            
-            sentiment_results = await self.sentiment_analyzer.combined_sentiment_analysis(symbol) if S.ENABLE_SENTIMENT else {}
-            
-            multitimeframe_results = await self.multitimeframe_strategy.analyze_multiple_timeframes(symbol)
-            
-            prediction = await self.prediction_engine.predict(
-                market_data['ohlcv'], symbol, '1h'
-            ) if S.ENABLE_PREDICTION else {}
-            
-            arbitrage_opportunity = None
-            if S.ENABLE_ARBITRAGE:
-                opportunities = await self.arbitrage_strategy.find_arbitrage_opportunities()
-                arbitrage_opportunity = next((opp for opp in opportunities if opp['symbol'] == symbol), None)
-            
-            current_price = market_data['price']
-            risk_params = await self._calculate_risk_parameters(
-                market_data['ohlcv'], current_price, user
-            )
-            
-            signal = self._generate_signal(
-                ta_results, onchain_results, sentiment_results, 
-                prediction, risk_params, multitimeframe_results
-            )
-            
-            analysis_data = {
-                'symbol': symbol,
-                'market_data': market_data,
-                'technical_analysis': ta_results,
-                'onchain_analysis': onchain_results,
-                'sentiment_analysis': sentiment_results,
-                'prediction': prediction,
-                'risk_management': risk_params,
-                'signal': signal,
-                'arbitrage_opportunity': arbitrage_opportunity,
-                'timestamp': datetime.datetime.utcnow()
-            }
-            
-            alerts = await self.alert_system.check_alerts(analysis_data, user)
-            
-            for alert in alerts:
-                await self.alert_system.send_telegram_alert(alert, user)
-            
-            self._save_analysis(
-                user_id, symbol, signal, prediction, 
-                market_data, ta_results, onchain_results
-            )
-            
-            if arbitrage_opportunity:
-                analysis_data['arbitrage_opportunity'] = arbitrage_opportunity
-            
-            return analysis_data
-            
-        except Exception as e:
-            logger.error(f"Error analyzing {symbol}: {e}")
-            return None
-    
-    async def _calculate_risk_parameters(self, df: pd.DataFrame, current_price: float, user: User) -> dict:
-        volatility = df['close'].pct_change().std()
-        trend_strength = abs(df['close'].iloc[-1] - df['close'].iloc[-20]) / df['close'].iloc[-20]
-        
-        market_conditions = {
-            'volatility': volatility,
-            'trend_strength': trend_strength
         }
-        
-        dynamic_risk = await self.risk_manager.calculate_dynamic_risk(market_conditions)
-        
-        stop_loss = self.risk_manager.dynamic_stop_loss(df, current_price, 'long')
-        
-        position_size = self.risk_manager.calculate_position_size(
-            account_balance=user.balance,
-            risk_percent=dynamic_risk['risk_per_trade'],
-            entry_price=current_price,
-            stop_loss=stop_loss,
-            method='volatility_adjusted',
-            volatility=volatility
-        )
-        
-        leverage = self.risk_manager.calculate_optimal_leverage(
-            volatility=volatility,
-            account_balance=user.balance,
-            position_size=position_size,
-            max_leverage=dynamic_risk['max_leverage']
-        )
-        
-        take_profit_1 = current_price + (current_price - stop_loss) * 2
-        take_profit_2 = current_price + (current_price - stop_loss) * 3
-        
-        return {
-            'stop_loss': stop_loss,
-            'take_profit_1': take_profit_1,
-            'take_profit_2': take_profit_2,
-            'position_size': position_size,
-            'leverage': leverage,
-            'risk_reward_ratio': self.risk_manager.calculate_risk_reward_ratio(
-                current_price, stop_loss, take_profit_1
-            ),
-            'dynamic_risk': dynamic_risk
-        }
-    
-    def _generate_signal(self, ta_results, onchain_results, sentiment_results, 
-                        prediction, risk_params, multitimeframe_results) -> dict:
-        signal_score = 0
-        
-        if ta_results.get('market_structure', {}).get('trend') == 'uptrend':
-            signal_score += 0.3
-        elif ta_results.get('market_structure', {}).get('trend') == 'downtrend':
-            signal_score -= 0.3
-        
-        if onchain_results.get('bias') == 'bullish':
-            signal_score += 0.2
-        elif onchain_results.get('bias') == 'bearish':
-            signal_score -= 0.2
-        
-        if sentiment_results.get('sentiment') == 'bullish':
-            signal_score += 0.15
-        elif sentiment_results.get('sentiment') == 'bearish':
-            signal_score -= 0.15
-        
-        if prediction and prediction.get('direction') == 'BUY':
-            signal_score += 0.1
-        elif prediction and prediction.get('direction') == 'SELL':
-            signal_score -= 0.1
-        
-        if multitimeframe_results.get('combined_signal') == 'BUY':
-            signal_score += 0.25 * multitimeframe_results.get('confidence', 1)
-        elif multitimeframe_results.get('combined_signal') == 'SELL':
-            signal_score -= 0.25 * multitimeframe_results.get('confidence', 1)
-        
-        if signal_score > 0.6:
-            signal = 'BUY'
-        elif signal_score < -0.6:
-            signal = 'SELL'
-        else:
-            signal = 'HOLD'
-        
-        return {
-            'signal': signal,
-            'score': signal_score,
-            'confidence': abs(signal_score),
-            'multitimeframe': multitimeframe_results
-        }
-    
-    def _save_analysis(self, user_id, symbol, signal, prediction, market_data, ta_results, onchain_results):
-        try:
-            session, _ = get_user_session(user_id)
-            if not session:
-                return
-                
-            new_signal = Signal(
-                user_id=user_id,
-                symbol=symbol,
-                signal_type=signal['signal'],
-                confidence=signal['confidence'],
-                price=market_data['price'],
-                source='AI_BOT',
-                timeframe='1h'
-            )
-            session.add(new_signal)
-            session.commit()
-            session.close()
-        except Exception as e:
-            logger.error(f"Error saving analysis: {e}")
-    
-    async def monitor_and_analyze(self):
-        symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
-        
-        while True:
-            try:
-                if await self.backup_system.should_backup():
-                    await self.backup_system.backup_database()
-                
-                for symbol in symbols:
-                    analysis = await self.analyze_symbol(symbol)
-                    if analysis:
-                        logger.info(f"Analysis completed for {symbol}: {analysis['signal']['signal']}")
-                
-                await asyncio.sleep(S.MONITOR_INTERVAL)
-            except Exception as e:
-                logger.error(f"Error in monitoring task: {e}")
-                await asyncio.sleep(60)
 
-# Web Dashboard
-async def handle_dashboard(request):
-    try:
-        installing = not transformers_available and S.ENABLE_TRANSFORMERS
-        
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Crypto AI Bot Dashboard</title>
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-        </head>
-        <body>
-            <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-                <div class="container">
-                    <a class="navbar-brand" href="#">Crypto AI Bot Dashboard</a>
-                    <div class="ms-auto">
-                        <span class="navbar-text">
-                            Status: <span id="status" class="badge {'bg-warning' if installing else 'bg-success'}">{'Installing AI Models...' if installing else 'Online'}</span>
-                        </span>
-                    </div>
-                </div>
-            </nav>
-            
-            <div class="container mt-4">
-                <div class="row">
-                    <div class="col-md-12">
-                        <div class="card">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h5>Market Overview</h5>
-                                <button class="btn btn-sm btn-primary" onclick="refreshData()">Refresh</button>
-                            </div>
-                            <div class="card-body">
-                                <div id="market-data">
-                                    <div class="text-center">
-                                        <div class="spinner-border" role="status">
-                                            <span class="visually-hidden">Loading...</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="row mt-4">
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Technical Analysis</h5>
-                            </div>
-                            <div class="card-body">
-                                <div id="ta-chart" style="height: 400px;"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Sentiment Analysis</h5>
-                            </div>
-                            <div class="card-body">
-                                <div id="sentiment-chart" style="height: 400px;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="row mt-4">
-                    <div class="col-md-12">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Recent Signals</h5>
-                            </div>
-                            <div class="card-body">
-                                <div class="table-responsive">
-                                    <table class="table table-striped">
-                                        <thead>
-                                            <tr>
-                                                <th>Symbol</th>
-                                                <th>Signal</th>
-                                                <th>Confidence</th>
-                                                <th>Price</th>
-                                                <th>Timestamp</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody id="signals-table">
-                                            <tr>
-                                                <td colspan="5" class="text-center">Loading signals...</td>
-                                            </tr>
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="row mt-4">
-                    <div class="col-md-12">
-                        <div class="card">
-                            <div class="card-header">
-                                <h5>Arbitrage Opportunities</h5>
-                            </div>
-                            <div class="card-body">
-                                <div id="arbitrage-data">
-                                    <p>No arbitrage opportunities found</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <script>
-                let socket;
-                
-                function connectWebSocket() {{
-                    socket = new WebSocket('ws://' + window.location.host + '/ws');
-                    
-                    socket.onmessage = function(event) {{
-                        const data = JSON.parse(event.data);
-                        updateDashboard(data);
-                    }};
-                    
-                    socket.onclose = function() {{
-                        setTimeout(connectWebSocket, 1000);
-                    }};
-                }}
-                
-                function updateDashboard(data) {{
-                    if (data.market_data) {{
-                        updateMarketData(data.market_data);
-                    }}
-                    
-                    if (data.technical_analysis) {{
-                        updateTechnicalAnalysis(data.technical_analysis);
-                    }}
-                    
-                    if (data.sentiment_analysis) {{
-                        updateSentimentAnalysis(data.sentiment_analysis);
-                    }}
-                    
-                    if (data.signals) {{
-                        updateSignals(data.signals);
-                    }}
-                    
-                    if (data.arbitrage) {{
-                        updateArbitrage(data.arbitrage);
-                    }}
-                }}
-                
-                function updateMarketData(marketData) {{
-                    let html = '<div class="row">';
-                    for (const [symbol, data] of Object.entries(marketData)) {{
-                        html += `
-                            <div class="col-md-3 mb-3">
-                                <div class="card">
-                                    <div class="card-body">
-                                        <h6>${{symbol}}/USDT</h6>
-                                        <h3>${{data.price.toFixed(2)}}</h3>
-                                        <p class="mb-0">
-                                            <span class="badge ${{data.change_24h >= 0 ? 'bg-success' : 'bg-danger'}}">
-                                                ${{data.change_24h >= 0 ? '+' : ''}}${{data.change_24h.toFixed(2)}}%
-                                            </span>
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                    }}
-                    html += '</div>';
-                    document.getElementById('market-data').innerHTML = html;
-                }}
-                
-                function updateTechnicalAnalysis(taData) {{
-                    // Implementation for technical analysis charts
-                }}
-                
-                function updateSentimentAnalysis(sentimentData) {{
-                    // Implementation for sentiment analysis charts
-                }}
-                
-                function updateSignals(signals) {{
-                    let html = '';
-                    signals.forEach(signal => {{
-                        html += `
-                            <tr>
-                                <td>${{signal.symbol}}</td>
-                                <td><span class="badge bg-${{signal.signal_type === 'BUY' ? 'success' : signal.signal_type === 'SELL' ? 'danger' : 'secondary'}}">${{signal.signal_type}}</span></td>
-                                <td>${{(signal.confidence * 100).toFixed(1)}}%</td>
-                                <td>${{signal.price.toFixed(2)}}</td>
-                                <td>${{new Date(signal.timestamp).toLocaleString()}}</td>
-                            </tr>
-                        `;
-                    }});
-                    document.getElementById('signals-table').innerHTML = html;
-                }}
-                
-                function updateArbitrage(arbitrageData) {{
-                    if (arbitrageData.length > 0) {{
-                        let html = '<div class="table-responsive"><table class="table table-striped">';
-                        html += '<thead><tr><th>Symbol</th><th>Buy Exchange</th><th>Sell Exchange</th><th>Profit</th></tr></thead><tbody>';
-                        
-                        arbitrageData.forEach(opp => {{
-                            html += `
-                                <tr>
-                                    <td>${{opp.symbol}}</td>
-                                    <td>${{opp.buy_exchange}}</td>
-                                    <td>${{opp.sell_exchange}}</td>
-                                    <td><span class="badge bg-success">${{opp.profit_percentage.toFixed(2)}}%</span></td>
-                                </tr>
-                            `;
-                        }});
-                        
-                        html += '</tbody></table></div>';
-                        document.getElementById('arbitrage-data').innerHTML = html;
-                    }} else {{
-                        document.getElementById('arbitrage-data').innerHTML = '<p>No arbitrage opportunities found</p>';
-                    }}
-                }}
-                
-                function refreshData() {{
-                    fetch('/api/dashboard')
-                        .then(response => response.json())
-                        .then(data => updateDashboard(data))
-                        .catch(error => console.error('Error refreshing data:', error));
-                }}
-                
-                document.addEventListener('DOMContentLoaded', function() {{
-                    connectWebSocket();
-                    refreshData();
-                    
-                    setInterval(refreshData, 30000);
-                }});
-            </script>
-        </body>
-        </html>
-        """
-        return web.Response(text=html_content, content_type='text/html')
-    except Exception as e:
-        logger.error(f"Dashboard error: {e}")
-        return web.Response(text=f"Error: {str(e)}", status=500)
+# Main Bot Logic
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_text(
+        "🤖 به ربات هوش مصنوعی پیشرفته ارز دیجیتال خوش آمدید!\n\n"
+        "برای دیدن دستورات موجود از /help استفاده کنید"
+    )
 
-async def handle_api_dashboard(request):
-    """API endpoint for dashboard data"""
-    try:
-        session, _ = get_user_session(1)  # Use a default user ID
-        if not session:
-            return web.json_response({'error': 'Database not available'}, status=500)
-            
-        signals = session.query(Signal).order_by(Signal.timestamp.desc()).limit(10).all()
-        
-        symbols = ['BTC', 'ETH', 'BNB', 'ADA', 'DOT']
-        market_data = {}
-        
-        for symbol in symbols:
-            cache_key = f"market_data_{symbol}"
-            cached_data = get_from_cache(cache_key)
-            if cached_data:
-                market_data[symbol] = cached_data
-        
-        bot = AdvancedCryptoBot()
-        arbitrage_opportunities = await bot.arbitrage_strategy.find_arbitrage_opportunities()
-        
-        data = {
-            'market_data': market_data,
-            'signals': [
-                {
-                    'symbol': s.symbol,
-                    'signal_type': s.signal_type,
-                    'confidence': s.confidence,
-                    'price': s.price,
-                    'timestamp': s.timestamp.isoformat()
-                } for s in signals
-            ],
-            'arbitrage': arbitrage_opportunities
-        }
-        
-        session.close()
-        return web.json_response(data)
-    except Exception as e:
-        logger.error(f"API dashboard error: {e}")
-        return web.json_response({'error': str(e)}, status=500)
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
+    help_text = """
+📚 دستورات موجود:
+/start - شروع ربات
+/help - نمایش این راهنما
+/signals - دریافت سیگنال‌های معاملاتی
+/watchlist - مدیریت لیست نظارت
+/performance - مشاهده عملکرد شما
+/settings - تنظیمات شخصی
+/status - وضعیت سیستم
+    """
+    await update.message.reply_text(help_text)
 
-async def handle_health(request):
-    """Health check endpoint"""
-    try:
-        return web.json_response({
-            "status": "healthy", 
-            "timestamp": datetime.datetime.utcnow().isoformat(),
-            "transformers_available": transformers_available,
-            "psycopg2_available": psycopg2_available,
-            "version": "2.0.0"
-        })
-    except Exception as e:
-        return web.json_response({"status": "unhealthy", "error": str(e)}, status=500)
-
-async def websocket_handler(request):
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
+async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /signals command"""
+    await update.message.reply_text("📊 در حال تولید سیگنال‌ها... لطفاً صبر کنید")
     
+    # نمونه سیگنال‌ها
+    signals = [
+        {"symbol": "BTC/USDT", "signal": "BUY", "confidence": 0.85, "price": 60000},
+        {"symbol": "ETH/USDT", "signal": "HOLD", "confidence": 0.65, "price": 3200},
+        {"symbol": "SOL/USDT", "signal": "SELL", "confidence": 0.75, "price": 150}
+    ]
+    
+    message = "📈 سیگنال‌های معاملاتی:\n\n"
+    for sig in signals:
+        emoji = "🟢" if sig["signal"] == "BUY" else "🔴" if sig["signal"] == "SELL" else "🟡"
+        message += f"{emoji} {sig['symbol']}: {sig['signal']} (اعتماد: {sig['confidence']:.2f})\n"
+        message += f"   قیمت: ${sig['price']:,.2f}\n\n"
+    
+    await update.message.reply_text(message)
+
+async def watchlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /watchlist command"""
+    session, user = get_user_session(update.effective_user.id)
+    if not session or not user:
+        await update.message.reply_text("❌ خطا در ارتباط با پایگاه داده")
+        return
+    
+    watchlist = session.query(Watchlist).filter_by(user_id=user.id).all()
+    
+    if not watchlist:
+        await update.message.reply_text("📝 لیست نظارت شما خالی است")
+        return
+    
+    message = "📝 لیست نظارت شما:\n\n"
+    for item in watchlist:
+        message += f"• {item.symbol}\n"
+    
+    await update.message.reply_text(message)
+    session.close()
+
+async def performance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /performance command"""
+    session, user = get_user_session(update.effective_user.id)
+    if not session or not user:
+        await update.message.reply_text("❌ خطا در ارتباط با پایگاه داده")
+        return
+    
+    performance = session.query(Performance).filter_by(user_id=user.id).first()
+    
+    if not performance:
+        await update.message.reply_text("📈 هنوز عملکردی ثبت نشده")
+        return
+    
+    message = f"""
+📊 عملکرد شما:
+• کل سیگنال‌ها: {performance.total_signals}
+• سیگنال‌های موفق: {performance.successful_signals}
+• نرخ موفقیت: {performance.win_rate:.2%}
+• میانگین بازده: {performance.avg_return:.2%}
+• حداکثر افت: {performance.max_drawdown:.2%}
+• نسبت سود به زیان: {performance.profit_factor:.2f}
+    """
+    
+    await update.message.reply_text(message)
+    session.close()
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /settings command"""
+    keyboard = [
+        [InlineKeyboardButton("سطح ریسک", callback_data='risk')],
+        [InlineKeyboardButton("بازه زمانی", callback_data='timeframe')],
+        [InlineKeyboardButton("اعلان‌ها", callback_data='notifications')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text('⚙️ تنظیمات:', reply_markup=reply_markup)
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command"""
+    status_text = f"""
+🟢 وضعیت سیستم:
+• پایگاه داده: {"فعال" if engine else "غیرفعال"}
+• ردیس: {"فعال" if redis_available else "غیرفعال"}
+• تحلیل تکنیکال: {"فعال" if S.ENABLE_ADVANCED_TA else "غیرفعال"}
+• تحلیل زنجیره‌ای: {"فعال" if S.ENABLE_ONCHAIN else "غیرفعال"}
+• تحلیل احساسات: {"فعال" if S.ENABLE_SENTIMENT else "غیرفعال"}
+• پیش‌بینی: {"فعال" if S.ENABLE_PREDICTION else "غیرفعال"}
+• مدیریت ریسک: {"فعال" if S.ENABLE_RISK_MANAGEMENT else "غیرفعال"}
+    """
+    await update.message.reply_text(status_text)
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'risk':
+        await query.edit_message_text(text="تنظیمات سطح ریسک:\n• کم\n• متوسط\n• زیاد")
+    elif query.data == 'timeframe':
+        await query.edit_message_text(text="تنظیمات بازه زمانی:\n• 1 دقیقه\n• 5 دقیقه\n• 15 دقیقه\n• 1 ساعت\n• 4 ساعت\n• 1 روز")
+    elif query.data == 'notifications':
+        await query.edit_message_text(text="تنظیمات اعلان‌ها:\n• فعال\n• غیرفعال")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors"""
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.effective_message:
+        await update.effective_message.reply_text("❌ خطایی رخ داد. لطفاً بعداً دوباره تلاش کنید")
+
+async def main():
+    """Start the bot"""
+    # Install heavy dependencies if needed
+    await install_heavy_dependencies()
+    
+    # Create the Application
+    application = ApplicationBuilder().token(S.TELEGRAM_BOT_TOKEN).build()
+    
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("signals", signals_command))
+    application.add_handler(CommandHandler("watchlist", watchlist_command))
+    application.add_handler(CommandHandler("performance", performance_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("status", status_command))
+    
+    # Add callback handler
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Add error handler
+    application.add_error_handler(error_handler)
+    
+    # Start the bot
+    logger.info("Starting Telegram bot...")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Keep the bot running
     try:
         while True:
-            session, _ = get_user_session(1)  # Use a default user ID
-            if not session:
-                await ws.send_json({"error": "Database not available"})
-                await asyncio.sleep(5)
-                continue
-                
-            signals = session.query(Signal).order_by(Signal.timestamp.desc()).limit(5).all()
-            
-            data = {
-                'signals': [
-                    {
-                        'symbol': s.symbol,
-                        'signal_type': s.signal_type,
-                        'confidence': s.confidence,
-                        'price': s.price,
-                        'timestamp': s.timestamp.isoformat()
-                    } for s in signals
-                ]
-            }
-            
-            await ws.send_json(data)
-            session.close()
-            
-            await asyncio.sleep(10)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+            await asyncio.sleep(3600)  # Sleep for an hour
+    except (KeyboardInterrupt, SystemExit):
+        pass
     finally:
-        await ws.close()
-    
-    return ws
+        # Cleanup
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
 
-# Main execution
-if __name__ == "__main__":
-    # Initialize bot
-    bot = AdvancedCryptoBot()
-    
-    # Setup web app
-    app = web.Application()
-    app.router.add_get('/', handle_dashboard)
-    app.router.add_get('/health', handle_health)
-    app.router.add_get('/api/dashboard', handle_api_dashboard)
-    app.router.add_get('/ws', websocket_handler)
-    
-    # Error handler
-    async def handle_error(request):
-        return web.json_response({"error": "Not Found"}, status=404)
-    
-    app.router.add_route('*', '/{tail:.*}', handle_error)
-    
-    # Start background task for heavy dependencies
-    if S.ENABLE_TRANSFORMERS:
-        loop = asyncio.get_event_loop()
-        loop.create_task(install_heavy_dependencies())
-    
-    # Start background monitoring task
-    try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(bot.monitor_and_analyze())
-    except Exception as e:
-        logger.error(f"Error creating background task: {e}")
-    
-    # Start web server
-    if S.ENABLE_WEB_DASHBOARD:
-        try:
-            logger.info(f"Starting server on port {S.WEB_PORT}")
-            web.run_app(app, host='0.0.0.0', port=S.WEB_PORT)
-        except Exception as e:
-            logger.error(f"Error starting web server: {e}")
-    else:
-        logger.info("Web dashboard disabled")
+if __name__ == '__main__':
+    asyncio.run(main())
