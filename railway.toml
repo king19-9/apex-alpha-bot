@@ -1,21 +1,8 @@
 [build]
-command = "pip install -r requirements.txt && pip install -r requirements-heavy.txt"
+command = "pip install --no-cache-dir -r requirements.txt"
 
 [deploy]
 startCommand = "python app.py"
 
 [env]
 PYTHON_VERSION = "3.11"
-ENABLE_WEB_DASHBOARD = "false"
-ENABLE_ADVANCED_TA = "true"
-ENABLE_ONCHAIN = "true"
-ENABLE_SENTIMENT = "true"
-ENABLE_PREDICTION = "true"
-ENABLE_RISK_MANAGEMENT = "true"
-ENABLE_ARBITRAGE = "true"
-ENABLE_MONITOR = "true"
-ENABLE_BACKUP = "true"
-ENABLE_TRANSFORMERS = "true"
-DATABASE_URL = "sqlite:///crypto_bot.db"
-TELEGRAM_BOT_TOKEN = "توکن_ربات_شما_اینجا"
-TELEGRAM_CHAT_ID = "آیدی_چت_شما_اینجا"
