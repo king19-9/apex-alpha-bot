@@ -1,8 +1,31 @@
 [build]
-command = "pip install --no-cache-dir -r requirements.txt"
+builder = "NIXPACKS"
 
 [deploy]
 startCommand = "python app.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
 
 [env]
 PYTHON_VERSION = "3.11"
+
+# Database
+DATABASE_URL = "sqlite:///iran_crypto_bot.db"
+
+# Telegram
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+
+# Security
+SECRET_TOKEN = "iran_crypto_bot_secret_2024"
+
+# Optional APIs (can be empty)
+COINGECKO_API_KEY = ""
+NEWS_API_KEY = ""
+CRYPTOPANIC_API_KEY = ""
+
+# Redis (optional)
+REDIS_HOST = "localhost"
+REDIS_PORT = "6379"
+REDIS_PASSWORD = ""
+REDIS_DB = "0"
